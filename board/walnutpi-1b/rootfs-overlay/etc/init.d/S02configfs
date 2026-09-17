@@ -1,0 +1,15 @@
+#!/bin/sh
+# Mount configfs so DT overlays can be applied.
+case "$1" in
+	start)
+		if [ -d /sys/kernel/config ] && ! grep -q ' /sys/kernel/config ' /proc/mounts; then
+			mount -t configfs none /sys/kernel/config
+		fi
+		;;
+	stop)
+		;;
+	*)
+		echo "Usage: $0 {start|stop}"
+		exit 1
+		;;
+esac

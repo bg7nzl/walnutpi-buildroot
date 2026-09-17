@@ -1,0 +1,43 @@
+#!/bin/sh
+# 仅当用户写过真实 SSID 时后台关联。没 conf、没模组、没 DHCP 都不挡开机。
+CONF=/etc/wpa_supplicant.conf
+PID=/var/run/wpa_supplicant.pid
+
+conf_ready() {
+	[ -f "$CONF" ] || return 1
+	grep -q 'ssid=' "$CONF" || return 1
+	grep -q 'YOUR_SSID' "$CONF" && return 1
+	return 0
+}
+
+try_wifi() {
+	i=0
+	while [ "$i" -lt 20 ]; do
+		[ -d /sys/class/net/wlan0 ] && break
+		sleep 1
+		i=$((i + 1))
+	done
+	[ -d /sys/class/net/wlan0 ] || exit 0
+	[ -x /usr/sbin/wpa_supplicant ] || exit 0
+
+	ip link set wlan0 up 2>/dev/null || true
+	wpa_supplicant -B -P "$PID" -i wlan0 -c "$CONF" || exit 0
+	udhcpc -i wlan0 -t 3 -T 2 -n -q >/dev/null 2>&1 || true
+}
+
+case "$1" in
+	start)
+		conf_ready || exit 0
+		try_wifi &
+		;;
+	stop)
+		if [ -f "$PID" ]; then
+			kill "$(cat "$PID")" 2>/dev/null || true
+			rm -f "$PID"
+		fi
+		;;
+	*)
+		echo "Usage: $0 {start|stop}"
+		exit 1
+		;;
+esac

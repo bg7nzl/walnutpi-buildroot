@@ -1,0 +1,44 @@
+#!/bin/sh
+# 有 eth0 就后台试 DHCP；失败再 169.254。都不挡 rcS。
+
+try_wired() {
+	i=0
+	while [ "$i" -lt 25 ]; do
+		[ -d /sys/class/net/eth0 ] && break
+		sleep 1
+		i=$((i + 1))
+	done
+	[ -d /sys/class/net/eth0 ] || exit 0
+
+	ip link set eth0 up 2>/dev/null || true
+	# AC300 上电 + 协商可能比 eth0 出现更晚，先等载波再 DHCP。
+	i=0
+	while [ "$i" -lt 15 ]; do
+		grep -qx 1 /sys/class/net/eth0/carrier 2>/dev/null && break
+		sleep 1
+		i=$((i + 1))
+	done
+	udhcpc -i eth0 -t 5 -T 2 -n -q -S -x hostname:walnutpi >/dev/null 2>&1 || true
+
+	if ! ip -4 addr show eth0 2>/dev/null | grep -q "inet "; then
+		if [ -x /usr/sbin/avahi-autoipd ]; then
+			avahi-autoipd -D --force-bind eth0 2>/dev/null || \
+				avahi-autoipd -D eth0 2>/dev/null || true
+		fi
+	fi
+}
+
+case "$1" in
+	start)
+		try_wired &
+		;;
+	stop)
+		if [ -x /usr/sbin/avahi-autoipd ]; then
+			avahi-autoipd -k eth0 2>/dev/null || true
+		fi
+		;;
+	*)
+		echo "Usage: $0 {start|stop}"
+		exit 1
+		;;
+esac

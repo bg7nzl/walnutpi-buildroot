@@ -1,0 +1,82 @@
+#!/bin/sh
+# wifi-setup scan
+# wifi-setup <SSID> [密码]
+set -eu
+
+bring_wlan() {
+	if [ ! -d /sys/class/net/wlan0 ]; then
+		modprobe uwe5622_bsp_sdio 2>/dev/null || true
+		sleep 1
+		modprobe sprdwl_ng 2>/dev/null || true
+	fi
+	if [ ! -d /sys/class/net/wlan0 ]; then
+		echo "没有 wlan0。检查 /lib/firmware/uwe5622/wcnmodem.bin 和 mmc1。" >&2
+		return 1
+	fi
+	ip link set wlan0 up
+}
+
+cmd_scan() {
+	bring_wlan
+	echo "扫描 wlan0 …"
+	iw dev wlan0 scan | awk '
+		/^BSS / {
+			if (mac != "") printf "%s\t%s MHz\t%s\t%s\n", sig, freq, mac, ssid
+			mac=$2
+			sub(/\(on.*/, "", mac)
+			ssid="(hidden)"; sig=""; freq=""
+			next
+		}
+		/SSID:/ {
+			sub(/^[[:space:]]*SSID:[[:space:]]*/, "")
+			ssid=$0
+			if (ssid == "") ssid="(hidden)"
+			next
+		}
+		/signal:/ { sig=$2 " " $3; next }
+		/freq:/ { freq=$2; next }
+		END {
+			if (mac != "") printf "%s\t%s MHz\t%s\t%s\n", sig, freq, mac, ssid
+		}
+	'
+}
+
+SSID="${1:-}"
+PSK="${2:-}"
+
+if [ -z "$SSID" ]; then
+	echo "用法: wifi-setup scan"
+	echo "      wifi-setup <SSID> [密码]"
+	echo "会写入 /etc/wpa_supplicant.conf 并立刻关联 wlan0。"
+	exit 1
+fi
+
+if [ "$SSID" = "scan" ] || [ "$SSID" = "-s" ]; then
+	cmd_scan
+	exit 0
+fi
+
+if [ -n "$PSK" ]; then
+	wpa_passphrase "$SSID" "$PSK" > /etc/wpa_supplicant.conf
+else
+	cat > /etc/wpa_supplicant.conf <<EOF
+network={
+	ssid="$SSID"
+	key_mgmt=NONE
+}
+EOF
+fi
+chmod 600 /etc/wpa_supplicant.conf
+
+bring_wlan
+
+if [ -f /var/run/wpa_supplicant.pid ]; then
+	kill "$(cat /var/run/wpa_supplicant.pid)" 2>/dev/null || true
+	rm -f /var/run/wpa_supplicant.pid
+fi
+killall wpa_supplicant 2>/dev/null || true
+
+wpa_supplicant -B -P /var/run/wpa_supplicant.pid -i wlan0 -c /etc/wpa_supplicant.conf
+udhcpc -i wlan0 -t 8 -T 2 -n -q || true
+echo "已保存。开机后 S60wifi 会自动关联。"
+ip -4 addr show wlan0 2>/dev/null || true

@@ -1,0 +1,87 @@
+// SPDX-License-Identifier: (GPL-2.0+ OR MIT)
+/*
+ * WalnutPi 1B 与 ZeroW 共用这一份设备树。
+ * 板级来自核桃派原理图和 wiki；芯片绑定走主线 H616 / AXP313A。
+ * 官方 DTB 和未测完的魔改不当规格。
+ * Zero 的网口/音频/红外在 FPC 上，节点仍打开：无扩展板时 I2C NAK，无害。
+ */
+
+/dts-v1/;
+
+#include "sun50i-h616-walnutpi.dtsi"
+#include "sun50i-h616-cpu-opp.dtsi"
+
+/ {
+	model = "WalnutPi 1B / Zero";
+	compatible = "walnutpi,1b", "walnutpi,zero", "walnutpi,zerow",
+		     "allwinner,sun50i-h618", "allwinner,sun50i-h616";
+
+	aliases {
+		ethernet0 = &emac1;
+	};
+
+	/*
+	 * AC200 要 24 MHz。pwm-clock 要求 period 等于
+	 * 1e9/freq 或 DIV_ROUND_UP(1e9,freq)，即 41 或 42 ns。
+	 * 写成 500 ns（2 MHz）会探测失败 -22，EMAC 随后复位超时。
+	 */
+	ac200_pwm_clk: ac200-clk {
+		compatible = "pwm-clock";
+		#clock-cells = <0>;
+		pwms = <&pwm 5 42 0>;
+		clock-frequency = <24000000>;
+	};
+
+	sound_hdmi: sound-hdmi {
+		compatible = "allwinner,sunxi-hdmi-machine";
+		sunxi,cpudai-controller = <&ahub_daudio1>;
+		sunxi,snddaudio-codec = "hdmi-audio-codec.4.auto";
+	};
+};
+
+&codec {
+	allwinner,audio-routing =
+		"Line Out", "LINEOUT";
+	status = "okay";
+};
+
+&emac1 {
+	pinctrl-names = "default";
+	pinctrl-0 = <&rmii_emac1_pins>;
+	clocks = <&ccu CLK_BUS_EMAC1>, <&ccu CLK_EMAC_25M>, <&ac200_pwm_clk>;
+	clock-names = "stmmaceth", "25m", "ephy24m";
+	phy-mode = "rmii";
+	phy-supply = <&reg_dldo1>;
+	allwinner,rx-delay-ps = <3100>;
+	allwinner,tx-delay-ps = <700>;
+	status = "okay";
+};
+
+&i2c3 {
+	status = "okay";
+	pinctrl-names = "default";
+	pinctrl-0 = <&i2c3_pa_pins>;
+
+	ac200: mfd@10 {
+		compatible = "x-powers,ac200";
+		reg = <0x10>;
+		clocks = <&ac200_pwm_clk>;
+		nvmem-cells = <&ephy_calibration>;
+		nvmem-cell-names = "calibration";
+
+		ac200_ephy: ac200-ephy {
+			compatible = "x-powers,ac200-ephy";
+			status = "okay";
+		};
+	};
+};
+
+&ir {
+	status = "okay";
+};
+
+&pwm {
+	pinctrl-names = "default";
+	pinctrl-0 = <&pwm5_pin>;
+	status = "okay";
+};

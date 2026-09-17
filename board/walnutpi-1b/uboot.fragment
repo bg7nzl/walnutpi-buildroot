@@ -1,0 +1,2 @@
+# 已废弃：电压和 USB VBUS 写在 uboot/walnutpi_1b_defconfig。
+# 本文件不再被 Buildroot 引用。

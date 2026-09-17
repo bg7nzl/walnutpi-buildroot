@@ -1,0 +1,215 @@
+#!/bin/sh
+# 40Pin 复用：把 /boot/overlays/*.dtbo 叠进内核 DTB。
+# 主线没有 configfs overlay，合成后需 reboot（和官方 set-device 一样）。
+# 不是官方 set-device 包。
+set -eu
+
+OVERLAY_DIR=/boot/overlays
+STATE=/etc/walnutpi/overlays
+DTB=/boot/allwinner/sun50i-h616-walnutpi-1b.dtb
+DTB_BASE=/boot/allwinner/sun50i-h616-walnutpi-1b.dtb.base
+DTB_LINK=/boot/sun50i-h616-walnutpi-1b.dtb
+FDTOVERLAY=/usr/bin/fdtoverlay
+
+usage() {
+	echo "用法: overlay {list|status|enable <名>|disable <名>|pins|apply}"
+	echo "可用: i2c1 i2c2 uart2 uart4 spi1 pwm1 pwm2 pwm12 pwm3 pwm4 pwm34"
+	echo "uart4 与 pwm3/pwm4/pwm34 互斥（都占用 PI13/PI14）。"
+	echo "enable/disable 后需要 reboot 才进内核。"
+	exit 1
+}
+
+ensure_dirs() {
+	mkdir -p /etc/walnutpi
+	touch "$STATE"
+	if [ ! -f "$DTB_BASE" ] && [ -f "$DTB" ]; then
+		cp -a "$DTB" "$DTB_BASE"
+	fi
+}
+
+enabled_list() {
+	tr ' \t' '\n' < "$STATE" 2>/dev/null | sed '/^$/d'
+}
+
+save_list() {
+	printf '%s\n' "$@" > "$STATE"
+}
+
+has_name() {
+	needle=$1
+	shift
+	for x in "$@"; do
+		[ "$x" = "$needle" ] && return 0
+	done
+	return 1
+}
+
+apply_dtb() {
+	[ -f "$DTB_BASE" ] || { echo "没有底树 $DTB_BASE" >&2; return 1; }
+	[ -x "$FDTOVERLAY" ] || { echo "没有 fdtoverlay" >&2; return 1; }
+	tmp="${DTB}.new"
+	set --
+	for x in $(enabled_list); do
+		[ -f "${OVERLAY_DIR}/${x}.dtbo" ] || { echo "没有 ${x}.dtbo" >&2; return 1; }
+		set -- "$@" "${OVERLAY_DIR}/${x}.dtbo"
+	done
+	if [ "$#" -eq 0 ]; then
+		cp -a "$DTB_BASE" "$tmp"
+	else
+		"$FDTOVERLAY" -i "$DTB_BASE" -o "$tmp" "$@"
+	fi
+	mv "$tmp" "$DTB"
+	ln -sfn allwinner/sun50i-h616-walnutpi-1b.dtb "$DTB_LINK"
+}
+
+resolve_enable() {
+	name=$1
+	cur=$(enabled_list)
+	# shellcheck disable=SC2086
+	set -- $cur
+
+	case "$name" in
+		uart4)
+			for x in pwm3 pwm4 pwm34; do
+				if has_name "$x" "$@"; then
+					echo "uart4 与 $x 互斥（PI13/PI14）。先: overlay disable $x" >&2
+					exit 1
+				fi
+			done
+			;;
+		pwm3|pwm4|pwm34)
+			if has_name uart4 "$@"; then
+				echo "$name 与 uart4 互斥。先: overlay disable uart4" >&2
+				exit 1
+			fi
+			;;
+	esac
+
+	out=""
+	for x in "$@"; do
+		skip=
+		case "$name" in
+			pwm12) [ "$x" = pwm1 ] || [ "$x" = pwm2 ] || [ "$x" = pwm12 ] && skip=1 ;;
+			pwm34) [ "$x" = pwm3 ] || [ "$x" = pwm4 ] || [ "$x" = pwm34 ] && skip=1 ;;
+			pwm1)  [ "$x" = pwm1 ] || [ "$x" = pwm12 ] && skip=1 ;;
+			pwm2)  [ "$x" = pwm2 ] || [ "$x" = pwm12 ] && skip=1 ;;
+			pwm3)  [ "$x" = pwm3 ] || [ "$x" = pwm34 ] && skip=1 ;;
+			pwm4)  [ "$x" = pwm4 ] || [ "$x" = pwm34 ] && skip=1 ;;
+			*)     [ "$x" = "$name" ] && skip=1 ;;
+		esac
+		[ -n "$skip" ] || out="$out $x"
+	done
+
+	want=$name
+	if [ "$name" = pwm1 ] && echo "$out" | grep -qw pwm2; then
+		want=pwm12
+		out=$(echo "$out" | tr ' ' '\n' | grep -v '^pwm2$' | tr '\n' ' ')
+		echo "同时需要 PWM1+2，改用 pwm12"
+	fi
+	if [ "$name" = pwm2 ] && echo "$out" | grep -qw pwm1; then
+		want=pwm12
+		out=$(echo "$out" | tr ' ' '\n' | grep -v '^pwm1$' | tr '\n' ' ')
+		echo "同时需要 PWM1+2，改用 pwm12"
+	fi
+	if [ "$name" = pwm3 ] && echo "$out" | grep -qw pwm4; then
+		want=pwm34
+		out=$(echo "$out" | tr ' ' '\n' | grep -v '^pwm4$' | tr '\n' ' ')
+		echo "同时需要 PWM3+4，改用 pwm34"
+	fi
+	if [ "$name" = pwm4 ] && echo "$out" | grep -qw pwm3; then
+		want=pwm34
+		out=$(echo "$out" | tr ' ' '\n' | grep -v '^pwm3$' | tr '\n' ' ')
+		echo "同时需要 PWM3+4，改用 pwm34"
+	fi
+
+	case "$want" in
+		pwm12) out=$(echo "$out" | tr ' ' '\n' | grep -Ev '^(pwm1|pwm2|pwm12)$' | tr '\n' ' ') ;;
+		pwm34) out=$(echo "$out" | tr ' ' '\n' | grep -Ev '^(pwm3|pwm4|pwm34)$' | tr '\n' ' ') ;;
+	esac
+
+	printf '%s %s\n' "$out" "$want" | tr -s ' ' '\n' | sed '/^$/d'
+}
+
+cmd_list() {
+	if [ -d "$OVERLAY_DIR" ]; then
+		ls -1 "$OVERLAY_DIR"/*.dtbo 2>/dev/null | sed 's|.*/||;s|\.dtbo$||'
+	fi
+}
+
+cmd_status() {
+	echo "已写入（reboot 后生效）："
+	list=$(enabled_list)
+	if [ -z "$list" ]; then
+		echo "  (无，40Pin 按 GPIO)"
+	else
+		echo "$list" | sed 's/^/  /'
+	fi
+}
+
+cmd_enable() {
+	name=$1
+	[ -n "$name" ] || usage
+	[ -f "${OVERLAY_DIR}/${name}.dtbo" ] || { echo "没有 overlay: $name" >&2; exit 1; }
+	new=$(resolve_enable "$name")
+	save_list $new
+	apply_dtb
+	echo "已启用: $(echo $new)"
+	echo "reboot 后生效。"
+}
+
+cmd_disable() {
+	name=$1
+	[ -n "$name" ] || usage
+	new=$(enabled_list | grep -vx "$name" || true)
+	save_list $new
+	apply_dtb
+	echo "已关闭: $name"
+	echo "reboot 后生效。"
+}
+
+cmd_pins() {
+	cat <<'EOF'
+40Pin（1B / Zero 同一排针，wiki 图）
+ 1  3.3V          2  5V
+ 3  PI8  I2C1 SDA 4  5V
+ 5  PI7  I2C1 SCL 6  GND
+ 7  PC8           8  PI5  UART2 TX
+ 9  GND          10  PI6  UART2 RX
+11  PC9          12  PC10
+13  PC11         14  GND
+15  PI11 PWM1    16  PI12 PWM2
+17  3.3V         18  PC14
+19  PH7  SPI1 MOSI 20 GND
+21  PH8  SPI1 MISO 22 PC15
+23  PH6  SPI1 SCLK 24 PH5  SPI1 CS0
+25  GND          26  PH9  SPI1 CS1
+27  PI10 I2C2 SDA 28 PI9  I2C2 SCL
+29  PI0          30  GND
+31  PI1          32  PI16
+33  PI2          34  GND
+35  PI3          36  PI15
+37  PI4          38  PI13 PWM3 / UART4 TX
+39  GND          40  PI14 PWM4 / UART4 RX
+
+40Pin 用 gpiochip1（300b000.pinctrl，288 线）。gpiochip0 是 R 口 PL，不是排针。
+行号 = bank*32 + n（PA=0 … PI=8）。例：PC8=72，PI8=264，PH7=231。
+普通 GPIO 不用 overlay：gpioset gpiochip1 72=1
+i2c1 -> overlay enable i2c1 && reboot && i2cdetect -y 1
+spi1 -> overlay enable spi1 && reboot && /dev/spidev1.0
+uart2/4 -> /dev/ttyS2 /dev/ttyS4
+EOF
+}
+
+ensure_dirs
+[ "${1:-}" ] || usage
+cmd=$1
+shift
+case "$cmd" in
+	list) cmd_list ;;
+	status) cmd_status ;;
+	enable) cmd_enable "${1:-}" ;;
+	disable) cmd_disable "${1:-}" ;;
+	pins) cmd_pins ;;
+	apply|boot) apply_dtb ;;
+	*) usage ;;
+esac

@@ -1,0 +1,3 @@
+# Dropbear 启动参数。S50dropbear 会再追加 -R（缺 host key 时生成）。
+# 不要加 -s（禁止密码认证）或 -w（禁止 root 登录）。
+DROPBEAR_ARGS=""

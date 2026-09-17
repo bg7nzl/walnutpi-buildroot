@@ -1,0 +1,6 @@
+# 推荐：wifi-setup 你的SSID 密码
+# 或把本文件复制为 /etc/wpa_supplicant.conf，开机 S60wifi 会关联。
+network={
+	ssid="YOUR_SSID"
+	psk="YOUR_PASSWORD"
+}

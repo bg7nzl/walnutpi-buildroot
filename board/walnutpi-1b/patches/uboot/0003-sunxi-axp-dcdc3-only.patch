@@ -1,0 +1,28 @@
+# WalnutPi: program AXP DCDC3 (DRAM) only. Do not write DCDC2 (CPU OTP).
+#
+--- a/board/sunxi/board.c
++++ b/board/sunxi/board.c
+@@ -564,5 +564,6 @@
+ 	defined CONFIG_AXP313_POWER || defined CONFIG_AXP717_POWER
+ 	power_failed = axp_init();
++	printf(" axp=%d", power_failed);
+ 
+ 	if (IS_ENABLED(CONFIG_AXP_DISABLE_BOOT_ON_POWERON) && !power_failed) {
+ 		u8 boot_reason;
+@@ -579,9 +580,13 @@
+ 	power_failed |= axp_set_dcdc1(CONFIG_AXP_DCDC1_VOLT);
+ 	power_failed |= axp_set_dcdc5(CONFIG_AXP_DCDC5_VOLT);
+ #endif
+-#ifdef CONFIG_AXP_DCDC2_VOLT
+-	power_failed |= axp_set_dcdc2(CONFIG_AXP_DCDC2_VOLT);
+-	power_failed |= axp_set_dcdc3(CONFIG_AXP_DCDC3_VOLT);
++#ifdef CONFIG_AXP_DCDC3_VOLT
++	/* DCDC2 is VDD-CPU (OTP). Only DCDC3 (DRAM) is written here. */
++	{
++		int r = axp_set_dcdc3(CONFIG_AXP_DCDC3_VOLT);
++		power_failed |= r;
++		printf(" dcdc3=%d", r);
++	}
+ #endif
+ #ifdef CONFIG_AXP_DCDC4_VOLT
+ 	power_failed |= axp_set_dcdc4(CONFIG_AXP_DCDC4_VOLT);

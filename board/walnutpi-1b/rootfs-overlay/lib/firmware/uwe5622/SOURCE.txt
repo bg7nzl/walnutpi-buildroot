@@ -1,0 +1,9 @@
+wcnmodem.bin 来自 Unisoc 闭源 blob，经 armbian/firmware 分发：
+https://github.com/armbian/firmware/tree/master/uwe5622
+不是 walnutpi/firmware。
+
+UWE5622 的 NVM 就是 wifi_2355b001_1ant.ini（构建时会链成 nvm.bin）。
+regulatory.db 来自 Buildroot wireless-regdb，装到 /lib/firmware/。
+
+蓝牙 PSKEY/RF：/lib/firmware/bt_configure_pskey.ini 与 bt_configure_rf.ini
+同样来自 armbian/firmware（Unisoc Marlin3），由 sprd-hciattach 在挂 H4 前下发。

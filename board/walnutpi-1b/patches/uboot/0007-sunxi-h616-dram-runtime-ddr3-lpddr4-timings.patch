@@ -1,0 +1,51 @@
+# One SPL must program DDR3-1333 or LPDDR4-2133 timings from para->type.
+#
+--- a/arch/arm/mach-sunxi/dram_timings/Makefile
++++ b/arch/arm/mach-sunxi/dram_timings/Makefile
+@@ -6,3 +6,6 @@
+ obj-$(CONFIG_SUNXI_DRAM_H616_DDR3_1333)	+= h616_ddr3_1333.o
+ obj-$(CONFIG_SUNXI_DRAM_H616_LPDDR3)	+= h616_lpddr3.o
+ obj-$(CONFIG_SUNXI_DRAM_H616_LPDDR4)	+= h616_lpddr4_2133.o
++obj-$(CONFIG_SUNXI_DRAM_H616_LPDDR4)	+= h616_ddr3_1333.o
++obj-$(CONFIG_SUNXI_DRAM_H616_DDR3_1333)	+= h616_lpddr4_2133.o
++obj-$(CONFIG_DRAM_SUN50I_H616)		+= h616_timing_auto.o
+--- a/arch/arm/mach-sunxi/dram_timings/h616_ddr3_1333.c
++++ b/arch/arm/mach-sunxi/dram_timings/h616_ddr3_1333.c
+@@ -14,7 +14,7 @@
+ #include <asm/arch/dram.h>
+ #include <asm/arch/cpu.h>
+ 
+-void mctl_set_timing_params(const struct dram_para *para)
++void mctl_set_timing_params_ddr3(const struct dram_para *para)
+ {
+ 	struct sunxi_mctl_ctl_reg * const mctl_ctl =
+ 			(struct sunxi_mctl_ctl_reg *)SUNXI_DRAM_CTL0_BASE;
+--- a/arch/arm/mach-sunxi/dram_timings/h616_lpddr4_2133.c
++++ b/arch/arm/mach-sunxi/dram_timings/h616_lpddr4_2133.c
+@@ -12,7 +12,7 @@
+ #include <asm/arch/dram.h>
+ #include <asm/arch/cpu.h>
+ 
+-void mctl_set_timing_params(const struct dram_para *para)
++void mctl_set_timing_params_lpddr4(const struct dram_para *para)
+ {
+ 	struct sunxi_mctl_ctl_reg * const mctl_ctl =
+ 			(struct sunxi_mctl_ctl_reg *)SUNXI_DRAM_CTL0_BASE;
+--- a/arch/arm/mach-sunxi/dram_timings/h616_timing_auto.c
++++ b/arch/arm/mach-sunxi/dram_timings/h616_timing_auto.c
+@@ -0,0 +1,15 @@
++// SPDX-License-Identifier: GPL-2.0+
++/* Dispatch H616 DRAM controller timings by runtime memory type. */
++
++#include <asm/arch/dram.h>
++
++void mctl_set_timing_params_ddr3(const struct dram_para *para);
++void mctl_set_timing_params_lpddr4(const struct dram_para *para);
++
++void mctl_set_timing_params(const struct dram_para *para)
++{
++	if (para->type == SUNXI_DRAM_TYPE_DDR3)
++		mctl_set_timing_params_ddr3(para);
++	else
++		mctl_set_timing_params_lpddr4(para);
++}

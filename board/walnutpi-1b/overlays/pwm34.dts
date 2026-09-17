@@ -1,0 +1,7 @@
+/dts-v1/;
+/plugin/;
+
+&pwm {
+	pinctrl-names = "default";
+	pinctrl-0 = <&pwm5_pin>, <&pwm3_pi_pin>, <&pwm4_pi_pin>;
+};

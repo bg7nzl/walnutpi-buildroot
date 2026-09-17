@@ -1,0 +1,15 @@
+# Do not abort AXP313 init on chip-id mismatch (official 313A is 0x4b).
+#
+--- a/drivers/power/axp_spl.c
++++ b/drivers/power/axp_spl.c
+@@ -150,8 +150,8 @@
+ 			return ret;
+ 
+ 		if ((axp_chip_id & AXP_CHIP_VERSION_MASK) != AXP_CHIP_ID) {
+-			debug("unknown PMIC: 0x%x\n", axp_chip_id);
+-			return -EINVAL;
++			printf(" pmic=0x%x", axp_chip_id);
++			/* WalnutPi AXP313A id is 0x4b; still program DCDC3. */
+ 		}
+ 	}
+ 

@@ -1,0 +1,139 @@
+# DDR3 first at 1.3V with OrangePi Zero2 timings; official DDR3 CA table; then LPDDR4.
+#
+--- a/arch/arm/mach-sunxi/dram_sun50i_h616.c
++++ b/arch/arm/mach-sunxi/dram_sun50i_h616.c
+@@ -998,6 +998,21 @@
+ 	if (para->tpr10 & TPR10_CA_BIT_DELAY)
+ 		mctl_phy_ca_bit_delay_compensation(para, config);
+ 
++	/* Official walnutpi/uboot UNKNOWN_FEATURE for DDR3 (not LPDDR4 TPR). */
++	if (para->type == SUNXI_DRAM_TYPE_DDR3) {
++		u32 *ca = (u32 *)(SUNXI_DRAM_PHY0_BASE + 0x780);
++		int j;
++
++		for (j = 0; j < 32; j++)
++			writel(0xc, &ca[j]);
++		writel(0xe, SUNXI_DRAM_PHY0_BASE + 0x78c);
++		writel(0xe, SUNXI_DRAM_PHY0_BASE + 0x7a4);
++		writel(0xe, SUNXI_DRAM_PHY0_BASE + 0x7b8);
++		writel(0x8, SUNXI_DRAM_PHY0_BASE + 0x7d4);
++		writel(0xe, SUNXI_DRAM_PHY0_BASE + 0x7dc);
++		writel(0xe, SUNXI_DRAM_PHY0_BASE + 0x7e0);
++	}
++
+ 	switch (para->type) {
+ 	case SUNXI_DRAM_TYPE_DDR3:
+ 		val = para->tpr6 & 0xff;
+@@ -1445,18 +1460,49 @@
+ 	return (1ULL << (config->cols + config->rows + 3)) * width * config->ranks;
+ }
+ 
+-static void walnutpi_dram_apply_type(struct dram_para *para,
+-				     enum sunxi_dram_type type)
++static void walnutpi_dram_volt(unsigned int mv)
+ {
+-	para->type = type;
+-	/*
+-	 * DDR3 bit-delay bytes from walnutpi/uboot dram_sun50i_h616.c
+-	 * (board PHY calibration). LPDDR4 TPR11/TPR12 come from Kconfig.
+-	 */
+-	if (type == SUNXI_DRAM_TYPE_DDR3) {
+-		para->tpr11 = 0x1a1a1a16;
+-		para->tpr12 = 0x14121210;
++#ifdef CONFIG_AXP313_POWER
++	if (axp_set_dcdc3(mv))
++		printf(" v%u?", mv);
++	else
++		udelay(5000);
++#endif
++}
++
++/* OrangePi Zero2 (H616 DDR3) mainline: WL+cal+train, no DX bit-delay. */
++static void walnutpi_load_ddr3(struct dram_para *para, unsigned int clk)
++{
++	para->type = SUNXI_DRAM_TYPE_DDR3;
++	para->clk = clk;
++	para->dx_odt = 0x08080808;
++	para->tpr6 = 0x3300c080;
++	para->tpr10 = 0x00f83438;
++	para->tpr11 = 0;
++	para->tpr12 = 0;
++}
++
++static void walnutpi_load_lpddr4(struct dram_para *para, u32 tpr6, u32 tpr10,
++				 u32 tpr11, u32 tpr12)
++{
++	para->type = SUNXI_DRAM_TYPE_LPDDR4;
++	para->clk = 792;
++	para->dx_odt = 0x07070707;
++	para->tpr6 = tpr6;
++	para->tpr10 = tpr10;
++	para->tpr11 = tpr11;
++	para->tpr12 = tpr12;
++}
++
++static bool walnutpi_try(const char *tag, struct dram_para *para,
++			 struct dram_config *config)
++{
++	if (mctl_auto_detect_rank_width(para, config)) {
++		printf(" %s+", tag);
++		return true;
+ 	}
++	printf(" %s-", tag);
++	return false;
+ }
+ 
+ unsigned long sunxi_dram_init(void)
+@@ -1482,33 +1528,30 @@
+ 	setbits_le32(&prcm->res_cal_ctrl, BIT(8));
+ 	clrbits_le32(&prcm->ohms240, 0x3f);
+ 
+-	/* Current 1B/Zero are LPDDR4; discontinued 1G SKU is DDR3.
+-	 * 64 MiB is the 8-col/13-row floor — treat it as a failed probe.
++	/* 15:50:30 trained as DDR3; LPDDR4 TPR/bit-delay starves that SKU.
++	 * DDR3 first at 1.3 V (1B schematic), Zero2 timings; then LPDDR4 at 1.1 V.
+ 	 */
+-	walnutpi_dram_apply_type(&para, SUNXI_DRAM_TYPE_LPDDR4);
+-	if (mctl_auto_detect_rank_width(&para, &config))
++	walnutpi_dram_volt(1300);
++	walnutpi_load_ddr3(&para, 720);
++	if (walnutpi_try("d3A", &para, &config))
+ 		goto detected;
+-	printf(" lp4A");
+-
+-	para.tpr6 = 0x44000000;
+-	para.tpr10 = 0x402f6663;
+-	para.tpr11 = 0x24242624;
+-	para.tpr12 = 0x0f0f100f;
+-	walnutpi_dram_apply_type(&para, SUNXI_DRAM_TYPE_LPDDR4);
+-	if (mctl_auto_detect_rank_width(&para, &config))
++	walnutpi_load_ddr3(&para, 672);
++	if (walnutpi_try("d3B", &para, &config))
++		goto detected;
++	walnutpi_load_ddr3(&para, 792);
++	if (walnutpi_try("d3C", &para, &config))
+ 		goto detected;
+-	printf(" lp4B");
+ 
+-	para.tpr6 = CONFIG_DRAM_SUN50I_H616_TPR6;
+-	para.tpr10 = CONFIG_DRAM_SUN50I_H616_TPR10;
+-#ifdef CONFIG_AXP313_POWER
+-	if (axp_set_dcdc3(1300))
+-		printf(" v13?");
+-#endif
+-	walnutpi_dram_apply_type(&para, SUNXI_DRAM_TYPE_DDR3);
+-	if (mctl_auto_detect_rank_width(&para, &config))
++	walnutpi_dram_volt(1100);
++	walnutpi_load_lpddr4(&para, 0x4400c080, 0x40ef6663, 0x24242323, 0x0e0e0e0e);
++	if (walnutpi_try("lp4A", &para, &config))
++		goto detected;
++	walnutpi_load_lpddr4(&para, 0x44000000, 0x402f6663, 0x24242624, 0x0f0f100f);
++	if (walnutpi_try("lp4B", &para, &config))
++		goto detected;
++	walnutpi_load_lpddr4(&para, 0x48808080, 0x402f6663, 0x26262524, 0x100f100f);
++	if (walnutpi_try("lp4C", &para, &config))
+ 		goto detected;
+-	printf(" ddr3");
+ 	panic("This DRAM setup is currently not supported.\n");
+ 
+ detected:

@@ -1,0 +1,64 @@
+#!/bin/sh
+# Unisoc WiFi/BT：先解 rfkill，再对 ttyBT0 做展锐 PSKEY/RF/enable，最后挂 H4。
+# 不要用裸 btattach H4，否则内核会在 0x080f（Write Default Link Policy）上把 hci0 初始化停掉。
+case "$1" in
+	start)
+		modprobe uwe5622_bsp_sdio 2>/dev/null || true
+		sleep 1
+		modprobe sprdwl_ng 2>/dev/null || true
+		modprobe sprdbt_tty 2>/dev/null || true
+		if command -v rfkill >/dev/null 2>&1; then
+			rfkill unblock bluetooth 2>/dev/null || true
+			rfkill unblock all 2>/dev/null || true
+		fi
+		for st in /sys/class/rfkill/rfkill*/state; do
+			[ -e "$st" ] || continue
+			echo 1 > "$st" 2>/dev/null || true
+		done
+		i=0
+		while [ $i -lt 20 ]; do
+			[ -c /dev/ttyBT0 ] && break
+			sleep 1
+			i=$((i + 1))
+		done
+		if [ ! -c /dev/ttyBT0 ]; then
+			echo "S30uwe5622: 没有 /dev/ttyBT0"
+			exit 0
+		fi
+		# mtty 刚出现时固件还没准备好收厂商命令
+		sleep 1
+		killall sprd-hciattach hciattach btattach 2>/dev/null || true
+		sleep 0.2
+		if [ -x /usr/sbin/sprd-hciattach ]; then
+			if ! /usr/sbin/sprd-hciattach /dev/ttyBT0; then
+				echo "S30uwe5622: sprd-hciattach 失败"
+				exit 0
+			fi
+		else
+			echo "S30uwe5622: 缺少 sprd-hciattach"
+			exit 0
+		fi
+		i=0
+		while [ $i -lt 10 ]; do
+			[ -d /sys/class/bluetooth/hci0 ] && break
+			sleep 1
+			i=$((i + 1))
+		done
+		# hci0 的 rfkill 是挂 H4 之后才出现的，前面那轮 unblock 打不中。
+		for rk in /sys/class/rfkill/rfkill*; do
+			[ -e "$rk/type" ] || continue
+			[ "$(cat "$rk/type")" = bluetooth ] || continue
+			echo 0 > "$rk/soft" 2>/dev/null || echo 1 > "$rk/state" 2>/dev/null || true
+		done
+		if command -v hciconfig >/dev/null 2>&1; then
+			hciconfig hci0 up 2>/dev/null || true
+		fi
+		;;
+	stop)
+		killall sprd-hciattach 2>/dev/null || true
+		;;
+	*)
+		echo "Usage: $0 {start|stop}"
+		exit 1
+		;;
+esac

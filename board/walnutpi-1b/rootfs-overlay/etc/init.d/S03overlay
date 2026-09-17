@@ -1,0 +1,15 @@
+#!/bin/sh
+# 若有人只改了 /etc/walnutpi/overlays，开机再合成一次 DTB（下次重启才进内核）。
+case "$1" in
+	start)
+		if [ -x /usr/sbin/overlay ] && [ -s /etc/walnutpi/overlays ]; then
+			/usr/sbin/overlay apply || true
+		fi
+		;;
+	stop)
+		;;
+	*)
+		echo "Usage: $0 {start|stop}"
+		exit 1
+		;;
+esac

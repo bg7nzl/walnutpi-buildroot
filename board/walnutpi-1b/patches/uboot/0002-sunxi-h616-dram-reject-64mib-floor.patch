@@ -1,0 +1,102 @@
+# Reject the 64 MiB floor, scan rows first, print geometry.
+#
+--- a/arch/arm/mach-sunxi/dram_sun50i_h616.c
++++ b/arch/arm/mach-sunxi/dram_sun50i_h616.c
+@@ -14,6 +14,7 @@
+  */
+ #include <init.h>
+ #include <log.h>
++#include <stdio.h>
+ #include <asm/io.h>
+ #include <asm/arch/clock.h>
+ #include <asm/arch/dram.h>
+@@ -1391,31 +1392,29 @@
+ {
+ 	unsigned int shift;
+ 
+-	/* max. config for columns, but not rows */
+-	config->cols = 11;
+-	config->rows = 13;
+-	mctl_core_init(para, config);
+-
+-	shift = config->bus_full_width + 1;
+-
+-	/* detect column address bits */
+-	for (config->cols = 8; config->cols < 11; config->cols++) {
+-		if (mctl_mem_matches(1ULL << (config->cols + shift)))
+-			break;
+-	}
+-	debug("detected %u columns\n", config->cols);
+-
+-	/* reconfigure to make sure that all active rows are accessible */
++	/* Rows first (walnutpi/uboot). Mainline cols-first with rows=13
++	 * collapses to 8c/13r = 64 MiB when the first alias test is a dummy.
++	 */
++	config->cols = 8;
+ 	config->rows = 18;
+ 	mctl_core_init(para, config);
+ 
+-	/* detect row address bits */
+ 	shift = config->bus_full_width + 4 + config->cols;
+ 	for (config->rows = 13; config->rows < 18; config->rows++) {
+ 		if (mctl_mem_matches(1ULL << (config->rows + shift)))
+ 			break;
+ 	}
+ 	debug("detected %u rows\n", config->rows);
++
++	config->cols = 11;
++	mctl_core_init(para, config);
++
++	shift = config->bus_full_width + 1;
++	for (config->cols = 8; config->cols < 11; config->cols++) {
++		if (mctl_mem_matches(1ULL << (config->cols + shift)))
++			break;
++	}
++	debug("detected %u columns\n", config->cols);
+ }
+ 
+ static unsigned long mctl_calc_size(const struct dram_config *config)
+@@ -1463,7 +1462,9 @@
+ 	setbits_le32(&prcm->res_cal_ctrl, BIT(8));
+ 	clrbits_le32(&prcm->ohms240, 0x3f);
+ 
+-	/* Current 1B/Zero are LPDDR4; discontinued 1G SKU is DDR3. */
++	/* Current 1B/Zero are LPDDR4; discontinued 1G SKU is DDR3.
++	 * 64 MiB is the 8-col/13-row floor — treat it as a failed probe.
++	 */
+ 	walnutpi_dram_apply_type(&para, SUNXI_DRAM_TYPE_LPDDR4);
+ 	if (!mctl_auto_detect_rank_width(&para, &config)) {
+ 		walnutpi_dram_apply_type(&para, SUNXI_DRAM_TYPE_DDR3);
+@@ -1472,10 +1473,30 @@
+ 	}
+ 
+ 	mctl_auto_detect_dram_size(&para, &config);
+-
+-	mctl_core_init(&para, &config);
++	if (!mctl_core_init(&para, &config))
++		panic("DRAM core init failed.\n");
+ 
+ 	size = mctl_calc_size(&config);
++	if (size < 256UL * 1024 * 1024 &&
++	    para.type == SUNXI_DRAM_TYPE_LPDDR4) {
++		walnutpi_dram_apply_type(&para, SUNXI_DRAM_TYPE_DDR3);
++		if (mctl_auto_detect_rank_width(&para, &config)) {
++			mctl_auto_detect_dram_size(&para, &config);
++			if (mctl_core_init(&para, &config))
++				size = mctl_calc_size(&config);
++		}
++	}
++	if (size < 256UL * 1024 * 1024)
++		panic("DRAM too small (%lu MiB) type=%u %ubit r%u %uc/%ur\n",
++		      size >> 20, para.type,
++		      config.bus_full_width ? 32 : 16, config.ranks,
++		      config.cols, config.rows);
++
++	printf(" %s %ubit r%u %uc/%ur",
++	       para.type == SUNXI_DRAM_TYPE_LPDDR4 ? "LPDDR4" :
++	       para.type == SUNXI_DRAM_TYPE_DDR3 ? "DDR3" : "?",
++	       config.bus_full_width ? 32 : 16, config.ranks,
++	       config.cols, config.rows);
+ 
+ 	mctl_set_master_priority();
+ 

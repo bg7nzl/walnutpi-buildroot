@@ -1,0 +1,11 @@
+/workspace/
+/build/
+/dl/
+/ccache/
+__pycache__/
+*.pyc
+*.img
+*.img.xz
+*.img.zst
+*.dtb
+u-boot-sunxi-with-spl.bin

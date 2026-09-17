@@ -1,0 +1,187 @@
+# Probe LPDDR4 then DDR3 on WalnutPi 1B/Zero (same SPL).
+# LPDDR4 is current production; DDR3 1G is discontinued.
+# PHY pin maps are Allwinner boot0 tables selected at runtime.
+# Bit-delay bytes for DDR3 fallback come from walnutpi/uboot DRAM calibration.
+#
+--- a/arch/arm/mach-sunxi/dram_sun50i_h616.c
++++ b/arch/arm/mach-sunxi/dram_sun50i_h616.c
+@@ -246,24 +246,40 @@
+ #endif
+ };
+ #else /* CONFIG_DRAM_SUN50I_H616_PHY_ADDR_MAP_0 */
+-static const u8 phy_init[] = {
+-#ifdef CONFIG_SUNXI_DRAM_H616_DDR3_1333
++/* Runtime tables so one SPL can probe LPDDR4 then DDR3 (WalnutPi 1B mix). */
++static const u8 phy_init_ddr3[] = {
+ 	0x07, 0x0b, 0x02, 0x16, 0x0d, 0x0e, 0x14, 0x19,
+ 	0x0a, 0x15, 0x03, 0x13, 0x04, 0x0c, 0x10, 0x06,
+ 	0x0f, 0x11, 0x1a, 0x01, 0x12, 0x17, 0x00, 0x08,
+ 	0x09, 0x05, 0x18
+-#elif defined(CONFIG_SUNXI_DRAM_H616_LPDDR3)
++};
++static const u8 phy_init_lpddr3[] = {
+ 	0x18, 0x06, 0x00, 0x05, 0x04, 0x03, 0x09, 0x02,
+ 	0x08, 0x01, 0x0a, 0x0b, 0x0c, 0x0d, 0x0e, 0x0f,
+ 	0x10, 0x11, 0x12, 0x13, 0x14, 0x15, 0x16, 0x07,
+ 	0x17, 0x19, 0x1a
+-#elif defined(CONFIG_SUNXI_DRAM_H616_LPDDR4)
++};
++static const u8 phy_init_lpddr4[] = {
+ 	0x02, 0x00, 0x17, 0x05, 0x04, 0x19, 0x06, 0x07,
+ 	0x08, 0x09, 0x0a, 0x0b, 0x0c, 0x0d, 0x0e, 0x0f,
+ 	0x10, 0x11, 0x12, 0x13, 0x14, 0x15, 0x16, 0x01,
+ 	0x18, 0x03, 0x1a
+-#endif
+ };
++
++static const u8 *mctl_phy_init_seq(enum sunxi_dram_type type, unsigned int *count)
++{
++	switch (type) {
++	case SUNXI_DRAM_TYPE_LPDDR4:
++		*count = ARRAY_SIZE(phy_init_lpddr4);
++		return phy_init_lpddr4;
++	case SUNXI_DRAM_TYPE_LPDDR3:
++		*count = ARRAY_SIZE(phy_init_lpddr3);
++		return phy_init_lpddr3;
++	default:
++		*count = ARRAY_SIZE(phy_init_ddr3);
++		return phy_init_ddr3;
++	}
++}
+ #endif /* CONFIG_DRAM_SUN50I_H616_PHY_ADDR_MAP_0 */
+ #define MASK_BYTE(reg, nr) (((reg) >> ((nr) * 8)) & 0x1f)
+ static void mctl_phy_configure_odt(const struct dram_para *para)
+@@ -963,8 +979,18 @@
+ 	writel(val2, SUNXI_DRAM_PHY0_BASE + 0x37c);
+ 
+ 	ptr = (u32 *)(SUNXI_DRAM_PHY0_BASE + 0xc0);
++#ifdef CONFIG_DRAM_SUN50I_H616_PHY_ADDR_MAP_1
+ 	for (i = 0; i < ARRAY_SIZE(phy_init); i++)
+ 		writel(phy_init[i], &ptr[i]);
++#else
++	{
++		unsigned int n;
++		const u8 *seq = mctl_phy_init_seq(para->type, &n);
++
++		for (i = 0; i < n; i++)
++			writel(seq[i], &ptr[i]);
++	}
++#endif
+ 
+ 	if (para->tpr10 & TPR10_CA_BIT_DELAY)
+ 		mctl_phy_ca_bit_delay_compensation(para, config);
+@@ -1318,7 +1344,7 @@
+ 	return mctl_ctrl_init(para, config);
+ }
+ 
+-static void mctl_auto_detect_rank_width(const struct dram_para *para,
++static bool mctl_auto_detect_rank_width(const struct dram_para *para,
+ 					struct dram_config *config)
+ {
+ 	/* this is minimum size that it's supported */
+@@ -1337,27 +1363,27 @@
+ 	config->bus_full_width = 1;
+ 	config->ranks = 2;
+ 	if (mctl_core_init(para, config))
+-		return;
++		return true;
+ 
+ 	debug("testing 32-bit width, rank = 1\n");
+ 	config->bus_full_width = 1;
+ 	config->ranks = 1;
+ 	if (mctl_core_init(para, config))
+-		return;
++		return true;
+ 
+ 	debug("testing 16-bit width, rank = 2\n");
+ 	config->bus_full_width = 0;
+ 	config->ranks = 2;
+ 	if (mctl_core_init(para, config))
+-		return;
++		return true;
+ 
+ 	debug("testing 16-bit width, rank = 1\n");
+ 	config->bus_full_width = 0;
+ 	config->ranks = 1;
+ 	if (mctl_core_init(para, config))
+-		return;
++		return true;
+ 
+-	panic("This DRAM setup is currently not supported.\n");
++	return false;
+ }
+ 
+ static void mctl_auto_detect_dram_size(const struct dram_para *para,
+@@ -1400,38 +1426,51 @@
+ 	return (1ULL << (config->cols + config->rows + 3)) * width * config->ranks;
+ }
+ 
+-static const struct dram_para para = {
+-	.clk = CONFIG_DRAM_CLK,
+-#ifdef CONFIG_SUNXI_DRAM_H616_DDR3_1333
+-	.type = SUNXI_DRAM_TYPE_DDR3,
+-#elif defined(CONFIG_SUNXI_DRAM_H616_LPDDR3)
+-	.type = SUNXI_DRAM_TYPE_LPDDR3,
+-#elif defined(CONFIG_SUNXI_DRAM_H616_LPDDR4)
+-	.type = SUNXI_DRAM_TYPE_LPDDR4,
+-#endif
+-	.dx_odt = CONFIG_DRAM_SUN50I_H616_DX_ODT,
+-	.dx_dri = CONFIG_DRAM_SUN50I_H616_DX_DRI,
+-	.ca_dri = CONFIG_DRAM_SUN50I_H616_CA_DRI,
+-	.odt_en = CONFIG_DRAM_SUN50I_H616_ODT_EN,
+-	.tpr0 = CONFIG_DRAM_SUN50I_H616_TPR0,
+-	.tpr2 = CONFIG_DRAM_SUN50I_H616_TPR2,
+-	.tpr6 = CONFIG_DRAM_SUN50I_H616_TPR6,
+-	.tpr10 = CONFIG_DRAM_SUN50I_H616_TPR10,
+-	.tpr11 = CONFIG_DRAM_SUN50I_H616_TPR11,
+-	.tpr12 = CONFIG_DRAM_SUN50I_H616_TPR12,
+-};
++static void walnutpi_dram_apply_type(struct dram_para *para,
++				     enum sunxi_dram_type type)
++{
++	para->type = type;
++	/*
++	 * DDR3 bit-delay bytes from walnutpi/uboot dram_sun50i_h616.c
++	 * (board PHY calibration). LPDDR4 TPR11/TPR12 come from Kconfig.
++	 */
++	if (type == SUNXI_DRAM_TYPE_DDR3) {
++		para->tpr11 = 0x1a1a1a16;
++		para->tpr12 = 0x14121210;
++	}
++}
+ 
+ unsigned long sunxi_dram_init(void)
+ {
+ 	struct sunxi_prcm_reg *const prcm =
+ 		(struct sunxi_prcm_reg *)SUNXI_PRCM_BASE;
++	struct dram_para para = {
++		.clk = CONFIG_DRAM_CLK,
++		.dx_odt = CONFIG_DRAM_SUN50I_H616_DX_ODT,
++		.dx_dri = CONFIG_DRAM_SUN50I_H616_DX_DRI,
++		.ca_dri = CONFIG_DRAM_SUN50I_H616_CA_DRI,
++		.odt_en = CONFIG_DRAM_SUN50I_H616_ODT_EN,
++		.tpr0 = CONFIG_DRAM_SUN50I_H616_TPR0,
++		.tpr2 = CONFIG_DRAM_SUN50I_H616_TPR2,
++		.tpr6 = CONFIG_DRAM_SUN50I_H616_TPR6,
++		.tpr10 = CONFIG_DRAM_SUN50I_H616_TPR10,
++		.tpr11 = CONFIG_DRAM_SUN50I_H616_TPR11,
++		.tpr12 = CONFIG_DRAM_SUN50I_H616_TPR12,
++	};
+ 	struct dram_config config;
+ 	unsigned long size;
+ 
+ 	setbits_le32(&prcm->res_cal_ctrl, BIT(8));
+ 	clrbits_le32(&prcm->ohms240, 0x3f);
+ 
+-	mctl_auto_detect_rank_width(&para, &config);
++	/* Current 1B/Zero are LPDDR4; discontinued 1G SKU is DDR3. */
++	walnutpi_dram_apply_type(&para, SUNXI_DRAM_TYPE_LPDDR4);
++	if (!mctl_auto_detect_rank_width(&para, &config)) {
++		walnutpi_dram_apply_type(&para, SUNXI_DRAM_TYPE_DDR3);
++		if (!mctl_auto_detect_rank_width(&para, &config))
++			panic("This DRAM setup is currently not supported.\n");
++	}
++
+ 	mctl_auto_detect_dram_size(&para, &config);
+ 
+ 	mctl_core_init(&para, &config);

@@ -1,0 +1,7 @@
+auto lo
+iface lo inet loopback
+
+# 不写 auto：S40network 只起 lo。有线由 S41 后台短试，
+# 没网卡、没链路、没 DHCP 都不挡 getty。
+iface eth0 inet dhcp
+	hostname walnutpi

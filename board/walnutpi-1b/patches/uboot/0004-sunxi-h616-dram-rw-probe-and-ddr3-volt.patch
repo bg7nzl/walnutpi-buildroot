@@ -1,0 +1,124 @@
+# Do not trust PHY training; require write/read. LPDDR4 1.1V then Zero3 TPR; DDR3 at 1.3V.
+#
+--- a/arch/arm/mach-sunxi/dram_sun50i_h616.c
++++ b/arch/arm/mach-sunxi/dram_sun50i_h616.c
+@@ -16,6 +16,8 @@
+ #include <log.h>
+ #include <stdio.h>
+ #include <asm/io.h>
++#include <asm/barriers.h>
++#include <axp_pmic.h>
+ #include <asm/arch/clock.h>
+ #include <asm/arch/dram.h>
+ #include <asm/arch/cpu.h>
+@@ -1345,6 +1347,24 @@
+ 	return mctl_ctrl_init(para, config);
+ }
+ 
++static bool walnutpi_sdram_works(void)
++{
++	writel(0x5a5aa5a5, CFG_SYS_SDRAM_BASE);
++	writel(0xa5a55a5a, CFG_SYS_SDRAM_BASE + 0x80);
++	dsb();
++	if (readl(CFG_SYS_SDRAM_BASE) != 0x5a5aa5a5)
++		return false;
++	if (readl(CFG_SYS_SDRAM_BASE + 0x80) != 0xa5a55a5a)
++		return false;
++	return true;
++}
++
++static bool walnutpi_rank_ok(const struct dram_para *para,
++			     struct dram_config *config)
++{
++	return mctl_core_init(para, config) && walnutpi_sdram_works();
++}
++
+ static bool mctl_auto_detect_rank_width(const struct dram_para *para,
+ 					struct dram_config *config)
+ {
+@@ -1363,25 +1383,25 @@
+ 	debug("testing 32-bit width, rank = 2\n");
+ 	config->bus_full_width = 1;
+ 	config->ranks = 2;
+-	if (mctl_core_init(para, config))
++	if (walnutpi_rank_ok(para, config))
+ 		return true;
+ 
+ 	debug("testing 32-bit width, rank = 1\n");
+ 	config->bus_full_width = 1;
+ 	config->ranks = 1;
+-	if (mctl_core_init(para, config))
++	if (walnutpi_rank_ok(para, config))
+ 		return true;
+ 
+ 	debug("testing 16-bit width, rank = 2\n");
+ 	config->bus_full_width = 0;
+ 	config->ranks = 2;
+-	if (mctl_core_init(para, config))
++	if (walnutpi_rank_ok(para, config))
+ 		return true;
+ 
+ 	debug("testing 16-bit width, rank = 1\n");
+ 	config->bus_full_width = 0;
+ 	config->ranks = 1;
+-	if (mctl_core_init(para, config))
++	if (walnutpi_rank_ok(para, config))
+ 		return true;
+ 
+ 	return false;
+@@ -1466,10 +1486,35 @@
+ 	 * 64 MiB is the 8-col/13-row floor — treat it as a failed probe.
+ 	 */
+ 	walnutpi_dram_apply_type(&para, SUNXI_DRAM_TYPE_LPDDR4);
+-	if (!mctl_auto_detect_rank_width(&para, &config)) {
+-		walnutpi_dram_apply_type(&para, SUNXI_DRAM_TYPE_DDR3);
+-		if (!mctl_auto_detect_rank_width(&para, &config))
+-			panic("This DRAM setup is currently not supported.\n");
++	if (mctl_auto_detect_rank_width(&para, &config))
++		goto detected;
++	printf(" lp4A");
++
++	para.tpr6 = 0x44000000;
++	para.tpr10 = 0x402f6663;
++	para.tpr11 = 0x24242624;
++	para.tpr12 = 0x0f0f100f;
++	walnutpi_dram_apply_type(&para, SUNXI_DRAM_TYPE_LPDDR4);
++	if (mctl_auto_detect_rank_width(&para, &config))
++		goto detected;
++	printf(" lp4B");
++
++	para.tpr6 = CONFIG_DRAM_SUN50I_H616_TPR6;
++	para.tpr10 = CONFIG_DRAM_SUN50I_H616_TPR10;
++#ifdef CONFIG_AXP313_POWER
++	if (axp_set_dcdc3(1300))
++		printf(" v13?");
++#endif
++	walnutpi_dram_apply_type(&para, SUNXI_DRAM_TYPE_DDR3);
++	if (mctl_auto_detect_rank_width(&para, &config))
++		goto detected;
++	printf(" ddr3");
++	panic("This DRAM setup is currently not supported.\n");
++
++detected:
++	if (!walnutpi_sdram_works()) {
++		printf(" dead");
++		panic("This DRAM setup is currently not supported.\n");
+ 	}
+ 
+ 	mctl_auto_detect_dram_size(&para, &config);
+@@ -1477,15 +1522,6 @@
+ 		panic("DRAM core init failed.\n");
+ 
+ 	size = mctl_calc_size(&config);
+-	if (size < 256UL * 1024 * 1024 &&
+-	    para.type == SUNXI_DRAM_TYPE_LPDDR4) {
+-		walnutpi_dram_apply_type(&para, SUNXI_DRAM_TYPE_DDR3);
+-		if (mctl_auto_detect_rank_width(&para, &config)) {
+-			mctl_auto_detect_dram_size(&para, &config);
+-			if (mctl_core_init(&para, &config))
+-				size = mctl_calc_size(&config);
+-		}
+-	}
+ 	if (size < 256UL * 1024 * 1024)
+ 		panic("DRAM too small (%lu MiB) type=%u %ubit r%u %uc/%ur\n",
+ 		      size >> 20, para.type,
