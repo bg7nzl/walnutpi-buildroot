@@ -961,6 +961,8 @@ static void sun8i_dwmac_ac300_early(void __iomem *io, struct device *dev)
             raise SystemExit(f"{src}: missing AC300 early end")
         text = text.replace(after_enable, after_enable_new, 1)
 
+    # 旧注入树里 bind_ephy 会跳过未挂上的 PHY。主线干净树没有这段，
+    # 后面会整段插入 bind_fn，这里找不到就跳过。
     if "EPHY scanned at MDIO" not in text:
         old_bind_skip = (
             "\t\tif (!phydev)\n"
@@ -992,9 +994,8 @@ static void sun8i_dwmac_ac300_early(void __iomem *io, struct device *dev)
             "\t\t\tcontinue;\n"
             "\t\t}\n"
         )
-        if old_bind_skip not in text:
-            raise SystemExit(f"{src}: missing bind_ephy skip")
-        text = text.replace(old_bind_skip, new_bind_skip, 1)
+        if old_bind_skip in text:
+            text = text.replace(old_bind_skip, new_bind_skip, 1)
 
     old_dvr = (
         "\tret = stmmac_dvr_probe(&pdev->dev, plat_dat, &stmmac_res);\n"
