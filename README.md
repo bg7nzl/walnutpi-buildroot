@@ -6,6 +6,16 @@
 
 刷卡、串口、SSH、WiFi、蓝牙、40Pin：见 [board/walnutpi-1b/FLASH.md](board/walnutpi-1b/FLASH.md)。
 
+相对官方镜像：官方 DTB 绑错 PMIC，CPU 调不了压，常停在约 **1.008 GHz**。本仓库按主线 H616 OPP 和原理图写 DCDC2，可到 **1.512 GHz**。同机对比（算力随频率上去，内存带宽几乎不变）：
+
+| 项 | 修前约 1.008 GHz | 修后 1.512 GHz | 变化 |
+| --- | --- | --- | --- |
+| sysbench CPU primes | 792.78 ev/s | 1189.42 ev/s | +50.0% |
+| stress-ng float | 751.77 bogo/s | 1128.88 bogo/s | +50.2% |
+| stress-ng FFT | 477.03 bogo/s | 702.00 bogo/s | +47.2% |
+| stress-ng matrix | 691.74 bogo/s | 1186.59 bogo/s | +71.5% |
+| 内存带宽 | 529.77 MiB/s | 527.83 MiB/s | 持平 |
+
 ## 构建
 
 宿主机要有 **git** 和 **Docker**（`sudo docker`）。Ubuntu 24.04、约 2 核即可。编译进 Debian bookworm 容器，`BR2_JLEVEL=2`。
@@ -34,6 +44,8 @@
 
 产物：`workspace/output/walnutpi-1b.img.zip`（裸 `.img` 不留在 `output/`）。U-Boot SPL 已写在镜像 8KiB 偏移。
 
+推到 `main` 会跑 GitHub Actions（`.github/workflows/image.yml`）编同一份 zip，并上传 artifact。第一次全量会很久。
+
 ```sh
 unzip walnutpi-1b.img.zip
 sudo dd if=walnutpi-1b.img of=/dev/sdX bs=4M conv=fsync status=progress
@@ -50,6 +62,7 @@ sudo dd if=walnutpi-1b.img of=/dev/sdX bs=4M conv=fsync status=progress
 | `board/walnutpi-1b/FLASH.md` | 刷卡与板上用法 |
 | `docker/` | 构建容器 |
 | `make-zip.sh` | 一键：在 `workspace/` 里出 zip |
+| `.github/workflows/image.yml` | `main` 推送时编 zip |
 | `scripts/build.sh` | Docker 内编译（由 `make-zip.sh` 调用拷贝后的这份） |
 
 栈：ATF `sun50i_h616`、主线 U-Boot、Linux 6.12、BusyBox SysV、Dropbear。有线是 H616 AC300 MDIO EPHY；无线/蓝牙是板载 UWE5622（驱动开源，`wcnmodem.bin` 等为展锐闭源 blob，经 [armbian/firmware](https://github.com/armbian/firmware/tree/master/uwe5622) 再分发，不是 `walnutpi/firmware`）。
