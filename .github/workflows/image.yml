@@ -1,9 +1,9 @@
-# 推到 main 时编镜像 zip。第一次会很久，也费磁盘。
+# 推到 main 或 full 时编镜像 zip。第一次会很久，也费磁盘。
 name: image
 
 on:
   push:
-    branches: [main]
+    branches: [main, full]
   workflow_dispatch:
 
 concurrency:
