@@ -1,15 +1,25 @@
 #!/bin/sh
-# Print how to SSH on the serial/HDMI console.
+# 串口 / HDMI 打印 SSH 与 /data 状态。
 
 announce() {
+	st=unknown
+	[ -f /run/walnutpi-data.state ] && st=$(cat /run/walnutpi-data.state)
+	hn=walnutpi
+	if [ -f /run/walnutpi.env ]; then
+		# shellcheck disable=SC1091
+		. /run/walnutpi.env
+		hn=${hostname:-walnutpi}
+	fi
 	{
 		echo
-		echo "==== WalnutPi 1B/Zero ===="
-		echo "SSH: ssh root@walnutpi.local   密码 walnutpi"
+		echo "==== WalnutPi 1B/Zero hardened ===="
+		echo "SSH: ssh root@${hn}.local   默认密码 walnutpi"
+		echo "data: $st   配置: /data/walnutpi.conf"
 		echo "网卡:"
 		ip -4 -o addr show 2>/dev/null | awk '{print "  "$2, $4}' || true
 		echo "WiFi: wifi-setup <SSID> <密码>"
-		echo "GPIO: overlay pins   /   overlay enable i2c1|spi1|uart2|..."
+		echo "GPIO: overlay pins / overlay enable i2c1|spi1|uart2|..."
+		echo "      改 overlay 后 reboot（U-Boot 叠 dtbo）"
 		echo "=========================="
 		echo
 	} | tee /run/walnutpi-net.txt >/dev/console 2>/dev/null || true
@@ -19,7 +29,6 @@ announce() {
 case "$1" in
 	start)
 		announce
-		# DHCP 在后台，稍后再打一次地址
 		( sleep 12; announce ) &
 		;;
 	stop)

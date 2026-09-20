@@ -18,7 +18,13 @@ try_wired() {
 		sleep 1
 		i=$((i + 1))
 	done
-	udhcpc -i eth0 -t 5 -T 2 -n -q -S -x hostname:walnutpi >/dev/null 2>&1 || true
+	hn=walnutpi
+	if [ -f /run/walnutpi.env ]; then
+		# shellcheck disable=SC1091
+		. /run/walnutpi.env
+		hn=${hostname:-walnutpi}
+	fi
+	udhcpc -i eth0 -t 5 -T 2 -n -q -S -x "hostname:$hn" >/dev/null 2>&1 || true
 
 	if ! ip -4 addr show eth0 2>/dev/null | grep -q "inet "; then
 		if [ -x /usr/sbin/avahi-autoipd ]; then

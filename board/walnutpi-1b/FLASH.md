@@ -1,10 +1,10 @@
-WalnutPi 1B / Zero 干净 Linux 基线（Buildroot）
+WalnutPi 1B / Zero 干净 Linux 基线（hardened）
 ==============================================
 
-串口：UART0 / ttyS0, 115200。root 密码：walnutpi
+串口：UART0 / ttyS0, 115200。默认 root 密码：walnutpi
 
 1B 与 Zero 刷同一张镜像、同一份 DTB：
-  /boot/allwinner/sun50i-h616-walnutpi-1b.dtb
+  FAT `/allwinner/sun50i-h616-walnutpi-1b.dtb`
 
 发布物是 zip（`output/` 里不放裸 .img）：
 
@@ -14,8 +14,39 @@ WalnutPi 1B / Zero 干净 Linux 基线（Buildroot）
 
 把 sdX 换成读卡器，不要写宿主机系统盘。
 
-U-Boot SPL 已写在镜像 8KiB 偏移。MBR 单分区：ext4 root（mmcblk0p1，480 MiB），内核与 DTB 在 /boot。
-卡上多出来的空间不自动扩容。
+分区
+----
+
+MBR 签名 `0xb0071b1b`。U-Boot SPL 在 SD **8KiB**。
+
+| 分区 | 类型 | 内容 |
+| --- | --- | --- |
+| p1 | FAT 64MiB | Image、DTB、dtbo、boot.scr。只读挂到 `/boot` |
+| p2 | squashfs | 根文件系统。内核 `root=PARTUUID=b0071b1b-02`，始终 ro |
+| p3 | ext4 标签 `walnutpi-data` | 镜像里 16MiB 空分区；**首次开机扩到卡尾**。挂 `/data` |
+
+p1/p2 刷完后再也不写。U-Boot 不存环境（`ENV_IS_NOWHERE`），不 `saveenv`。
+p3 损坏时 **不会自动 mkfs**（避免把半写的用户文件当坏盘格掉）。只可用：
+
+  walnutpi-config reset-data YES
+
+配置
+----
+
+唯一持久文件：`/data/walnutpi.conf`。
+
+- 分区在、文件可读且检验通过 → 覆盖默认。
+- 分区在、文件不存在 → 写入一份默认方便改。
+- 文件坏了 → 留下原文件，写 `/data/walnutpi.conf.err`，本趟用默认。
+
+键：`hostname`、`wifi_ssid`、`wifi_psk`（64 位 hex PSK，不存明文）、
+`ssh_authorized_key`、`root_pw_hash`、`overlay_*`、`dropbear_ed25519`（本机生成的
+ed25519 主机密钥，十六进制）。改 overlay 后 **reboot**，由 U-Boot `fdt apply`。
+
+  walnutpi-config show
+  walnutpi-config set hostname myboard
+  wifi-setup 你的SSID 密码
+  overlay enable i2c1 && reboot
 
 插卡上电接网线
 --------------
@@ -29,20 +60,21 @@ U-Boot SPL 已写在镜像 8KiB 偏移。MBR 单分区：ext4 root（mmcblk0p1�
 
    或看串口/HDMI 上打印的地址：`ssh root@<eth0>`。
    电脑要能解析 mDNS（Windows 通常可以；Linux 需本机 avahi/resolved）。
+   第一次开机在 /data 里生成 **这台板独有** 的 Dropbear 密钥；之后掉电指纹不变。
 
 4. 配 WiFi：
 
        wifi-setup scan
        wifi-setup 你的SSID 密码
 
-   写入 `/etc/wpa_supplicant.conf`，立刻关联，开机也会连。`scan` 会先把 wlan0 up 再列出周围 SSID。
+   写入 `/data/walnutpi.conf`，立刻关联，开机也会连。
 
 5. 板载蓝牙（UWE5622）：开机 `S30uwe5622` 会跑 `sprd-hciattach`（展锐 PSKEY/RF，不是裸 H4），并解开 `hci0` 的 rfkill、执行 `hciconfig hci0 up`。
 
        hciconfig -a          # 应看到 hci0 UP RUNNING
        bluetoothctl scan on
 
-   地址写在 `/etc/default/sprd_bt_addr`，默认从 SID 推（与 eth0 错开最后一字节）。
+   蓝牙地址从 SID 推（与 eth0 错开最后一字节），每块板唯一。配对信息在 tmpfs，重启即丢。
 
 6. GPIO / 配件（没有官方 set-device）：
 

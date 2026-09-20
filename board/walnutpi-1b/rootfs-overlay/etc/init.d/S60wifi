@@ -1,16 +1,40 @@
 #!/bin/sh
-# 仅当用户写过真实 SSID 时后台关联。没 conf、没模组、没 DHCP 都不挡开机。
-CONF=/etc/wpa_supplicant.conf
-PID=/var/run/wpa_supplicant.pid
+# 从 /run/walnutpi.env 生成运行时 wpa_supplicant，不写 /etc。
+set -eu
 
-conf_ready() {
-	[ -f "$CONF" ] || return 1
-	grep -q 'ssid=' "$CONF" || return 1
-	grep -q 'YOUR_SSID' "$CONF" && return 1
-	return 0
+CONF=/run/wpa_supplicant.conf
+PID=/run/wpa_supplicant.pid
+
+start() {
+	[ -f /run/walnutpi.env ] || exit 0
+	# shellcheck disable=SC1091
+	. /run/walnutpi.env
+	[ -n "${wifi_ssid:-}" ] || exit 0
+	if [ -n "${wifi_psk:-}" ]; then
+		cat > "$CONF" <<EOF
+ctrl_interface=/run/wpa_supplicant
+update_config=0
+network={
+	ssid="${wifi_ssid}"
+	psk=${wifi_psk}
+}
+EOF
+	else
+		cat > "$CONF" <<EOF
+ctrl_interface=/run/wpa_supplicant
+update_config=0
+network={
+	ssid="${wifi_ssid}"
+	key_mgmt=NONE
+}
+EOF
+	fi
+	chmod 0600 "$CONF"
+	try_wifi &
 }
 
 try_wifi() {
+	# UWE5622 在 S30 里 modprobe，wlan0 可能晚几秒出现。都不挡开机。
 	i=0
 	while [ "$i" -lt 20 ]; do
 		[ -d /sys/class/net/wlan0 ] && break
@@ -19,25 +43,21 @@ try_wifi() {
 	done
 	[ -d /sys/class/net/wlan0 ] || exit 0
 	[ -x /usr/sbin/wpa_supplicant ] || exit 0
-
 	ip link set wlan0 up 2>/dev/null || true
-	wpa_supplicant -B -P "$PID" -i wlan0 -c "$CONF" || exit 0
-	udhcpc -i wlan0 -t 3 -T 2 -n -q >/dev/null 2>&1 || true
+	start-stop-daemon -K -q -p "$PID" 2>/dev/null || true
+	start-stop-daemon -S -q -p "$PID" -m -b \
+		--exec /usr/sbin/wpa_supplicant -- -i wlan0 -c "$CONF" || exit 0
+	udhcpc -i wlan0 -n -q -t 8 -T 2 >/dev/null 2>&1 || true
 }
 
-case "$1" in
-	start)
-		conf_ready || exit 0
-		try_wifi &
-		;;
-	stop)
-		if [ -f "$PID" ]; then
-			kill "$(cat "$PID")" 2>/dev/null || true
-			rm -f "$PID"
-		fi
-		;;
-	*)
-		echo "Usage: $0 {start|stop}"
-		exit 1
-		;;
+stop() {
+	start-stop-daemon -K -q -p "$PID" 2>/dev/null || true
+	rm -f "$PID"
+}
+
+case "${1:-}" in
+start) start ;;
+stop) stop ;;
+restart) stop; start ;;
+*) echo "Usage: $0 {start|stop|restart}" >&2; exit 1 ;;
 esac

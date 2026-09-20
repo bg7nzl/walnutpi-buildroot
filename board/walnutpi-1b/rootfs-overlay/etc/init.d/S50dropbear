@@ -1,0 +1,38 @@
+#!/bin/sh
+# Dropbear：只用 /run 里本机生成的 ed25519，禁止 -R。
+set -u
+
+test -r /etc/default/dropbear && . /etc/default/dropbear
+
+KEY=/run/dropbear/dropbear_ed25519_host_key
+PID=/var/run/dropbear.pid
+
+start() {
+	if [ ! -f "$KEY" ]; then
+		echo "S50dropbear: 没有 $KEY，跳过（S45 应已生成）"
+		return 0
+	fi
+	install -d /var/run/dropbear
+	printf "Starting dropbear sshd: "
+	umask 077
+	# 不要 -R：密钥必须来自 conf / S45。
+	# shellcheck disable=SC2086
+	if start-stop-daemon -S -q -p "$PID" \
+		--exec /usr/sbin/dropbear -- -r "$KEY" ${DROPBEAR_ARGS:-}; then
+		echo "OK"
+	else
+		echo "FAIL"
+	fi
+}
+
+stop() {
+	printf "Stopping dropbear sshd: "
+	if start-stop-daemon -K -q -p "$PID"; then echo "OK"; else echo "FAIL"; fi
+}
+
+case "${1:-}" in
+start) start ;;
+stop) stop ;;
+restart) stop; start ;;
+*) echo "Usage: $0 {start|stop|restart}" >&2; exit 1 ;;
+esac

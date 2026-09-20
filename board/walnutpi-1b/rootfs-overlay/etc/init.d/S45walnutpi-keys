@@ -1,0 +1,44 @@
+#!/bin/sh
+# 本机生成 Dropbear ed25519，十六进制写入 /data/walnutpi.conf。
+set -eu
+
+KEY=/run/dropbear/dropbear_ed25519_host_key
+
+start() {
+	install -d -m 0700 /run/dropbear
+	hex=
+	if [ -f /run/walnutpi.env ]; then
+		# shellcheck disable=SC1091
+		. /run/walnutpi.env
+		hex=${dropbear_ed25519:-}
+	fi
+	if [ -n "$hex" ]; then
+		if walnutpi-hex dec "$hex" "$KEY"; then
+			chmod 0600 "$KEY"
+			return 0
+		fi
+		echo "S45walnutpi-keys: conf 里的密钥无法解码，重新生成" >&2
+		rm -f "$KEY"
+	fi
+	# haveged 已在 S21 跑过。
+	if ! dropbearkey -t ed25519 -f "$KEY" >/dev/null; then
+		echo "S45walnutpi-keys: dropbearkey 失败，本趟无 SSH" >&2
+		rm -f "$KEY"
+		return 0
+	fi
+	chmod 0600 "$KEY"
+	new=$(walnutpi-hex enc "$KEY")
+	if [ -d /data ] && grep -q ' /data ' /proc/mounts; then
+		walnutpi-config set dropbear_ed25519 "$new" || \
+			echo "S45walnutpi-keys: 无法写入 conf，本趟密钥只在内存" >&2
+	fi
+}
+
+stop() { :; }
+
+case "${1:-}" in
+start) start ;;
+stop) stop ;;
+restart) start ;;
+*) echo "Usage: $0 {start|stop}" >&2; exit 1 ;;
+esac

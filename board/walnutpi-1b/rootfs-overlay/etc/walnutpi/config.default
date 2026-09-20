@@ -1,0 +1,20 @@
+# WalnutPi 1B/Zero 配置。系统分区只读，只有 /data/walnutpi.conf 会被保存。
+# 改 overlay_* 需要 reboot。空值 = 用默认。
+hostname=walnutpi
+wifi_ssid=
+wifi_psk=
+ssh_authorized_key=
+root_pw_hash=
+overlay_i2c1=0
+overlay_i2c2=0
+overlay_uart2=0
+overlay_uart4=0
+overlay_spi1=0
+overlay_pwm1=0
+overlay_pwm2=0
+overlay_pwm12=0
+overlay_pwm3=0
+overlay_pwm4=0
+overlay_pwm34=0
+# 下面这行由设备自动生成，删掉会换 SSH 指纹
+dropbear_ed25519=

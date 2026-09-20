@@ -1,0 +1,2 @@
+# 只读根上不要写 /var/lib/seedrng。熵靠 haveged + jitter。
+SEEDRNG_ARGS="--seed-dir=/run/seedrng"

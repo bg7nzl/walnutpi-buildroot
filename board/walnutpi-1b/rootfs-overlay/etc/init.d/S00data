@@ -1,0 +1,144 @@
+#!/bin/sh
+# 扩容并挂上 /data（p3）与只读 /boot（p1）。不自动 mkfs。
+set -eu
+
+STATE=/run/walnutpi-data.state
+ERR=/run/walnutpi-data.err
+
+log() { echo "S00data: $*" ; }
+fail_soft() { echo "S00data: $*" >&2; echo "$*" > "$ERR"; }
+
+disk_from_sys() {
+	# $1 = /sys/dev/block/MAJ:MIN
+	sys=$(readlink -f "$1")
+	if [ -f "$sys/partition" ]; then
+		basename "$(dirname "$sys")"
+	else
+		basename "$sys"
+	fi
+}
+
+part_dev() {
+	disk=$1
+	n=$2
+	case "$disk" in
+	mmcblk*|nvme*|loop*) echo "/dev/${disk}p${n}" ;;
+	*) echo "/dev/${disk}${n}" ;;
+	esac
+}
+
+find_disk() {
+	# 先从根分区（squashfs 所在盘）反推：我们只扩自己启动的这张卡。
+	mm=$(awk '$5=="/" {print $3; exit}' /proc/self/mountinfo || true)
+	if [ -n "$mm" ] && [ -e "/sys/dev/block/$mm" ]; then
+		disk_from_sys "/sys/dev/block/$mm"
+		return 0
+	fi
+	# 后备：LABEL（fs 签名坏了就找不到，那时也不该 mkfs）。
+	data=$(findfs LABEL=walnutpi-data 2>/dev/null || true)
+	if [ -n "$data" ] && [ -b "$data" ]; then
+		mm=$(stat -c '%t:%T' "$data" 2>/dev/null || true)
+		# stat %t %T 是 hex；/sys/dev/block 要十进制
+		if [ -n "$mm" ]; then
+			maj=$(printf '%d' "0x${mm%:*}")
+			min=$(printf '%d' "0x${mm#*:}")
+			if [ -e "/sys/dev/block/${maj}:${min}" ]; then
+				disk_from_sys "/sys/dev/block/${maj}:${min}"
+				return 0
+			fi
+		fi
+	fi
+	return 1
+}
+
+grow_p3() {
+	disk=$1
+	ddev=/dev/$disk
+	p3=$(part_dev "$disk" 3)
+	[ -b "$p3" ] || return 1
+	sysp="/sys/block/$disk/$(basename "$p3")"
+	[ -f "$sysp/start" ] || return 0
+	start=$(cat "$sysp/start")
+	psize=$(cat "$sysp/size")
+	dsize=$(cat "/sys/block/$disk/size")
+	remain=$((dsize - start - psize))
+	# 少於 8MiB（16384 扇区）不扩。
+	if [ "$remain" -lt 16384 ]; then
+		return 0
+	fi
+	log "grow p3 by ~$((remain / 2048)) MiB"
+	# 根分区在用，sfdisk 的 BLKRRPART 会报 busy 但表已写好；一律再 partx -u。
+	echo ", +" | sfdisk --no-reread -N 3 "$ddev" || log "sfdisk returned $? (table may still be written)"
+	partx -u "$ddev" || partx -u "$p3" || true
+	newsize=$(cat "$sysp/size")
+	if [ "$newsize" -le "$psize" ]; then
+		fail_soft "p3 未扩容 ($psize -> $newsize)"
+	fi
+}
+
+mount_data() {
+	p3=$1
+	rc=0
+	e2fsck -p "$p3" || rc=$?
+	if [ "$rc" -ge 4 ]; then
+		fail_soft "e2fsck $p3 rc=$rc，不挂载、不 mkfs"
+		echo corrupt > "$STATE"
+		return 1
+	fi
+	resize2fs "$p3" || log "resize2fs skipped"
+	mkdir -p /data
+	if ! mount -o noatime,nodev,nosuid "$p3" /data; then
+		fail_soft "mount $p3 failed"
+		echo corrupt > "$STATE"
+		return 1
+	fi
+	echo ok > "$STATE"
+	return 0
+}
+
+start() {
+	install -d /run /tmp/dbus /tmp/bluetooth /tmp/alsa /run/root-ssh /run/dropbear /run/seedrng
+	chmod 1777 /tmp/bluetooth /tmp/alsa
+	echo absent > "$STATE"
+	rm -f "$ERR"
+
+	if ! disk=$(find_disk); then
+		fail_soft "找不到磁盘，只用默认配置"
+		walnutpi-config boot-apply || true
+		return 0
+	fi
+	p1=$(part_dev "$disk" 1)
+	p3=$(part_dev "$disk" 3)
+	grow_p3 "$disk" || true
+
+	if [ ! -b "$p3" ]; then
+		# grow 之后再找一次 label
+		p3=$(findfs LABEL=walnutpi-data 2>/dev/null || echo "$p3")
+	fi
+	if [ -b "$p3" ]; then
+		if mount_data "$p3"; then
+			:
+		fi
+	else
+		fail_soft "没有 p3，跳过 /data"
+	fi
+
+	if [ -b "$p1" ]; then
+		mkdir -p /boot
+		mount -o ro "$p1" /boot || log "mount /boot failed"
+	fi
+
+	walnutpi-config boot-apply || fail_soft "boot-apply failed"
+}
+
+stop() {
+	umount /boot 2>/dev/null || true
+	umount /data 2>/dev/null || true
+}
+
+case "${1:-}" in
+start) start ;;
+stop) stop ;;
+restart) stop; start ;;
+*) echo "Usage: $0 {start|stop|restart}" >&2; exit 1 ;;
+esac

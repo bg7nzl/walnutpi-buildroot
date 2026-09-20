@@ -1,0 +1,447 @@
+#!/bin/sh
+# /data/walnutpi.conf：检验、原子写、开机落地。
+set -eu
+
+DEFAULT=/etc/walnutpi/config.default
+CONF=/data/walnutpi.conf
+ENV=/run/walnutpi.env
+ERR=/data/walnutpi.conf.err
+MAX_BYTES=65536
+
+KNOWN="hostname wifi_ssid wifi_psk ssh_authorized_key root_pw_hash dropbear_ed25519 overlay_i2c1 overlay_i2c2 overlay_uart2 overlay_uart4 overlay_spi1 overlay_pwm1 overlay_pwm2 overlay_pwm12 overlay_pwm3 overlay_pwm4 overlay_pwm34"
+OVERLAYS="i2c1 i2c2 uart2 uart4 spi1 pwm1 pwm2 pwm12 pwm3 pwm4 pwm34"
+
+die() { echo "walnutpi-config: $*" >&2; exit 1; }
+
+quote() {
+	printf "'%s'" "$(printf '%s' "$1" | sed "s/'/'\\\\''/g")"
+}
+
+is_known() {
+	echo " $KNOWN " | grep -q " $1 "
+}
+
+is_overlay() {
+	echo " $OVERLAYS " | grep -q " $1 "
+}
+
+hex_ok() {
+	[ -n "$1" ] || return 0
+	printf '%s' "$1" | grep -qx '[0-9a-fA-F]*' || return 1
+	[ $((${#1} % 2)) -eq 0 ]
+}
+
+check_key() {
+	k=$1
+	v=$2
+	case "$k" in
+	hostname)
+		[ -n "$v" ] || return 1
+		[ "${#v}" -le 63 ] || return 1
+		printf '%s' "$v" | grep -qx '[A-Za-z0-9][A-Za-z0-9-]*' || return 1
+		printf '%s' "$v" | grep -q -- '-$' && return 1
+		return 0
+		;;
+	wifi_ssid)
+		[ "${#v}" -le 32 ] || return 1
+		printf '%s' "$v" | grep -q '[\"[:cntrl:]]' && return 1
+		return 0
+		;;
+	wifi_psk)
+		[ -z "$v" ] && return 0
+		[ "${#v}" -eq 64 ] || return 1
+		hex_ok "$v"
+		;;
+	ssh_authorized_key)
+		[ -z "$v" ] && return 0
+		printf '%s' "$v" | grep -q '[[:cntrl:]]' && return 1
+		printf '%s' "$v" | grep -Eq '^(ssh-ed25519|ssh-rsa|ecdsa-sha2-nistp256) [A-Za-z0-9+/=]+( .*)?$'
+		;;
+	root_pw_hash)
+		[ -z "$v" ] && return 0
+		printf '%s' "$v" | grep -Eq '^\$[156y]\$'
+		;;
+	dropbear_ed25519)
+		[ -z "$v" ] && return 0
+		[ "${#v}" -ge 64 ] || return 1
+		[ "${#v}" -le 2048 ] || return 1
+		hex_ok "$v"
+		;;
+	overlay_*)
+		[ "$v" = "0" ] || [ "$v" = "1" ]
+		;;
+	*)
+		return 1
+		;;
+	esac
+}
+
+file_level() {
+	f=$1
+	[ -f "$f" ] && [ -r "$f" ] || return 1
+	sz=$(wc -c < "$f" | tr -d ' ')
+	[ "$sz" -le "$MAX_BYTES" ] || return 1
+	stripped=$(tr -d '\000' < "$f" | wc -c | tr -d ' ')
+	[ "$sz" -eq "$stripped" ] || return 1
+	# 用 awk 扫一遍：行格式、重复、未知键、互斥
+	awk -v known="$KNOWN" '
+	BEGIN {
+		n = split(known, a, " ")
+		for (i = 1; i <= n; i++) ok[a[i]] = 1
+	}
+	{
+		line = $0
+		sub(/\r$/, "", line)
+		if (line ~ /^[ \t]*$/ || line ~ /^[ \t]*#/) next
+		if (line !~ /^[a-z][a-z0-9_]*=/) { bad = 1; exit }
+		eq = index(line, "=")
+		k = substr(line, 1, eq - 1)
+		v = substr(line, eq + 1)
+		if (!(k in ok)) { bad = 1; exit }
+		if (k in seen) { bad = 1; exit }
+		seen[k] = v
+	}
+	END {
+		if (bad) exit 1
+		u = seen["overlay_uart4"] + 0
+		p3 = seen["overlay_pwm3"] + 0
+		p4 = seen["overlay_pwm4"] + 0
+		p34 = seen["overlay_pwm34"] + 0
+		if (u && (p3 || p4 || p34)) exit 1
+		exit 0
+	}
+	' "$f"
+}
+
+load_kv_file() {
+	# $1 file → stdout KEY=VALUE（只输出已知且 key-level 通过的）
+	f=$1
+	[ -f "$f" ] || return 0
+	while IFS= read -r line || [ -n "$line" ]; do
+		line=$(printf '%s' "$line" | tr -d '\r')
+		case "$line" in
+		""|\#*) continue ;;
+		esac
+		k=${line%%=*}
+		v=${line#*=}
+		is_known "$k" || continue
+		if check_key "$k" "$v"; then
+			printf '%s=%s\n' "$k" "$v"
+		fi
+	done < "$f"
+}
+
+defaults_kv() {
+	load_kv_file "$DEFAULT"
+}
+
+merge_kv() {
+	# stdin: 多段 KEY=VAL。顺序按首次出现，值取最后一次。
+	awk -F= '
+	NF {
+		k=$1
+		sub(/^[^=]*=/, "")
+		if (!(k in val)) order[++n] = k
+		val[k] = $0
+	}
+	END {
+		for (i = 1; i <= n; i++) print order[i] "=" val[order[i]]
+	}
+	'
+}
+
+effective_kv() {
+	if [ -d /data ] && grep -q ' /data ' /proc/mounts && [ -f "$CONF" ] && file_level "$CONF"; then
+		{ defaults_kv; load_kv_file "$CONF"; } | merge_kv
+	else
+		defaults_kv
+	fi
+}
+
+write_env() {
+	install -d /run
+	: > "$ENV.tmp"
+	effective_kv | while IFS= read -r line; do
+		k=${line%%=*}
+		v=${line#*=}
+		printf '%s=%s\n' "$k" "$(quote "$v")" >> "$ENV.tmp"
+	done
+	mv "$ENV.tmp" "$ENV"
+}
+
+atomic_write_conf() {
+	# stdin = 完整 KEY=VAL
+	[ -d /data ] && grep -q ' /data ' /proc/mounts || die "没有可写的 /data"
+	tmp="$CONF.tmp.$$"
+	{
+		echo "# WalnutPi 配置。改 overlay_* 后 reboot。空值 = 默认。"
+		cat
+	} > "$tmp"
+	if ! file_level "$tmp"; then
+		rm -f "$tmp"
+		die "写出的内容未通过文件级检验"
+	fi
+	# 再验每个值
+	while IFS= read -r line; do
+		case "$line" in ""|\#*) continue ;; esac
+		k=${line%%=*}
+		v=${line#*=}
+		check_key "$k" "$v" || { rm -f "$tmp"; die "键 $k 值不合法"; }
+	done < "$tmp"
+	sync "$tmp" 2>/dev/null || sync
+	mv "$tmp" "$CONF"
+	sync /data 2>/dev/null || sync
+}
+
+seed_default() {
+	[ -d /data ] && grep -q ' /data ' /proc/mounts || return 1
+	[ -f "$CONF" ] && return 0
+	defaults_kv | atomic_write_conf
+}
+
+set_key() {
+	k=$1
+	v=$2
+	is_known "$k" || die "未知键 $k"
+	check_key "$k" "$v" || die "键 $k 值不合法"
+	if [ ! -f "$CONF" ]; then
+		seed_default || die "无法写入默认配置"
+	fi
+	{
+		load_kv_file "$CONF"
+		printf '%s=%s\n' "$k" "$v"
+	} | merge_kv | atomic_write_conf
+	write_env
+}
+
+get_key() {
+	k=$1
+	is_known "$k" || die "未知键 $k"
+	effective_kv | awk -F= -v k="$k" '$1==k { sub(/^[^=]*=/, ""); print; exit }'
+}
+
+ov_get() {
+	v=$(get_key "overlay_$1" 2>/dev/null || true)
+	echo "${v:-0}"
+}
+
+overlay_resolve_enable() {
+	want=$1
+	is_overlay "$want" || die "未知 overlay $want"
+	i2c1=$(ov_get i2c1); i2c2=$(ov_get i2c2)
+	uart2=$(ov_get uart2); uart4=$(ov_get uart4)
+	spi1=$(ov_get spi1)
+	pwm1=$(ov_get pwm1); pwm2=$(ov_get pwm2); pwm12=$(ov_get pwm12)
+	pwm3=$(ov_get pwm3); pwm4=$(ov_get pwm4); pwm34=$(ov_get pwm34)
+	case "$want" in
+	i2c1) i2c1=1 ;;
+	i2c2) i2c2=1 ;;
+	uart2) uart2=1 ;;
+	spi1) spi1=1 ;;
+	uart4)
+		uart4=1; pwm3=0; pwm4=0; pwm34=0
+		;;
+	pwm1)
+		if [ "$pwm2" = 1 ] || [ "$pwm12" = 1 ]; then pwm12=1; pwm1=0; pwm2=0
+		else pwm1=1; pwm12=0
+		fi
+		;;
+	pwm2)
+		if [ "$pwm1" = 1 ] || [ "$pwm12" = 1 ]; then pwm12=1; pwm1=0; pwm2=0
+		else pwm2=1; pwm12=0
+		fi
+		;;
+	pwm12) pwm12=1; pwm1=0; pwm2=0 ;;
+	pwm3)
+		uart4=0
+		if [ "$pwm4" = 1 ] || [ "$pwm34" = 1 ]; then pwm34=1; pwm3=0; pwm4=0
+		else pwm3=1; pwm34=0
+		fi
+		;;
+	pwm4)
+		uart4=0
+		if [ "$pwm3" = 1 ] || [ "$pwm34" = 1 ]; then pwm34=1; pwm3=0; pwm4=0
+		else pwm4=1; pwm34=0
+		fi
+		;;
+	pwm34) uart4=0; pwm34=1; pwm3=0; pwm4=0 ;;
+	esac
+	{
+		load_kv_file "$CONF"
+		echo "overlay_i2c1=$i2c1"
+		echo "overlay_i2c2=$i2c2"
+		echo "overlay_uart2=$uart2"
+		echo "overlay_uart4=$uart4"
+		echo "overlay_spi1=$spi1"
+		echo "overlay_pwm1=$pwm1"
+		echo "overlay_pwm2=$pwm2"
+		echo "overlay_pwm12=$pwm12"
+		echo "overlay_pwm3=$pwm3"
+		echo "overlay_pwm4=$pwm4"
+		echo "overlay_pwm34=$pwm34"
+	} | merge_kv | atomic_write_conf
+	write_env
+}
+
+overlay_disable() {
+	want=$1
+	is_overlay "$want" || die "未知 overlay $want"
+	case "$want" in
+	pwm1|pwm2|pwm12)
+		set_key overlay_pwm1 0
+		set_key overlay_pwm2 0
+		set_key overlay_pwm12 0
+		;;
+	pwm3|pwm4|pwm34)
+		set_key overlay_pwm3 0
+		set_key overlay_pwm4 0
+		set_key overlay_pwm34 0
+		;;
+	*)
+		set_key "overlay_$want" 0
+		;;
+	esac
+}
+
+sid_machine_id() {
+	sid=
+	for p in /sys/bus/nvmem/devices/sunxi-sid0/nvmem /sys/firmware/devicetree/base/sid/nvmem; do
+		if [ -r "$p" ]; then
+			sid=$p
+			break
+		fi
+	done
+	if [ -n "$sid" ] && command -v sha256sum >/dev/null; then
+		dd if="$sid" bs=16 count=1 2>/dev/null | sha256sum | awk '{print substr($1,1,32)}'
+	else
+		echo "00000000000000000000000000000000"
+	fi
+}
+
+apply_runtime() {
+	write_env
+	# shellcheck disable=SC1090
+	. "$ENV"
+	if [ -n "${hostname:-}" ]; then
+		hostname "$hostname" || true
+	fi
+	mid=$(sid_machine_id)
+	printf '%s\n' "$mid" > /run/machine-id
+	chmod 0444 /run/machine-id
+	mkdir -p /tmp/dbus
+	printf '%s\n' "$mid" > /tmp/dbus/machine-id
+	mkdir -p /run/root-ssh
+	chmod 0700 /run/root-ssh
+	if [ -n "${ssh_authorized_key:-}" ]; then
+		printf '%s\n' "$ssh_authorized_key" > /run/root-ssh/authorized_keys
+		chmod 0600 /run/root-ssh/authorized_keys
+	else
+		rm -f /run/root-ssh/authorized_keys
+	fi
+	if [ -n "${root_pw_hash:-}" ] && [ -f /etc/shadow ]; then
+		awk -F: -v h="$root_pw_hash" '
+			BEGIN { OFS=":" }
+			$1=="root" { $2=h; print; next }
+			{ print }
+		' /etc/shadow > /run/shadow
+		chmod 0400 /run/shadow
+		mount --bind /run/shadow /etc/shadow || true
+	fi
+}
+
+boot_apply() {
+	rm -f /run/walnutpi-data.err
+	if [ -d /data ] && grep -q ' /data ' /proc/mounts; then
+		if [ ! -e "$CONF" ]; then
+			echo "walnutpi-config: /data 上没有配置，写入默认"
+			defaults_kv | atomic_write_conf
+		elif ! file_level "$CONF"; then
+			echo "walnutpi-config: $CONF 文件级检验失败，沿用默认" >&2
+			{
+				echo "file-level check failed $(date -u 2>/dev/null || date)"
+			} > "$ERR" || true
+			echo "file-level-fail" > /run/walnutpi-data.err
+		fi
+	fi
+	apply_runtime
+}
+
+root_disk_p3() {
+	mm=$(awk '$5=="/" {print $3; exit}' /proc/self/mountinfo)
+	[ -n "$mm" ] && [ -e "/sys/dev/block/$mm" ] || return 1
+	sys=$(readlink -f "/sys/dev/block/$mm")
+	[ -f "$sys/partition" ] || return 1
+	disk=$(basename "$(dirname "$sys")")
+	case "$disk" in
+	mmcblk*|nvme*|loop*) echo "/dev/${disk}p3" ;;
+	*) echo "/dev/${disk}3" ;;
+	esac
+}
+
+reset_data() {
+	[ "${1:-}" = "YES" ] || die "危险：walnutpi-config reset-data YES"
+	# 标签可能已随文件系统一起损坏，退回到根盘的 p3。
+	dev=$(findfs LABEL=walnutpi-data 2>/dev/null || root_disk_p3 || true)
+	[ -n "$dev" ] && [ -b "$dev" ] || die "找不到 data 分区"
+	umount /data 2>/dev/null || true
+	mkfs.ext4 -F -L walnutpi-data "$dev"
+	mkdir -p /data
+	mount -o noatime,nodev,nosuid "$dev" /data
+	defaults_kv | atomic_write_conf
+	apply_runtime
+	echo "已重建 /data 并写入默认 walnutpi.conf"
+}
+
+overlay_status() {
+	for o in $OVERLAYS; do
+		printf '%s %s\n' "$o" "$(ov_get "$o")"
+	done
+}
+
+cmd=${1:-}
+shift || true
+case "$cmd" in
+check)
+	f=${1:-$CONF}
+	file_level "$f" || die "$f 文件级检验失败"
+	while IFS= read -r line; do
+		case "$line" in ""|\#*) continue ;; esac
+		k=${line%%=*}
+		v=${line#*=}
+		check_key "$k" "$v" || die "$f: $k 值不合法"
+	done < "$f"
+	echo "ok"
+	;;
+boot-apply) boot_apply ;;
+set)
+	[ $# -ge 2 ] || die "用法: walnutpi-config set KEY VALUE"
+	k=$1
+	shift
+	set_key "$k" "$*"
+	;;
+get)
+	[ $# -eq 1 ] || die "用法: walnutpi-config get KEY"
+	get_key "$1"
+	;;
+show)
+	effective_kv
+	;;
+overlay-enable)
+	[ $# -eq 1 ] || die "用法: walnutpi-config overlay-enable NAME"
+	[ -f "$CONF" ] || seed_default || die "无法写入配置"
+	overlay_resolve_enable "$1"
+	echo "已写入 overlay_$1=1，reboot 后由 U-Boot 叠加"
+	;;
+overlay-disable)
+	[ $# -eq 1 ] || die "用法: walnutpi-config overlay-disable NAME"
+	[ -f "$CONF" ] || seed_default || die "无法写入配置"
+	overlay_disable "$1"
+	echo "已清除 overlay_$1，reboot 后生效"
+	;;
+overlay-status) overlay_status ;;
+reset-data) reset_data "${1:-}" ;;
+*)
+	echo "用法: walnutpi-config check|show|get|set|overlay-enable|overlay-disable|overlay-status|reset-data YES" >&2
+	exit 1
+	;;
+esac
