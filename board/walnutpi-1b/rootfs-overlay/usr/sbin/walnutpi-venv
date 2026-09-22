@@ -1,0 +1,61 @@
+#!/bin/sh
+# 在 /data 建 venv。根只读；Buildroot Python 没有 ensurepip。
+set -eu
+
+usage() {
+	echo "用法: walnutpi-venv 目录" >&2
+	echo "  例: walnutpi-venv myapp        → /data/myapp" >&2
+	echo "      walnutpi-venv /data/myapp" >&2
+	exit 1
+}
+
+die() {
+	echo "walnutpi-venv: $*" >&2
+	exit 1
+}
+
+[ -n "${1:-}" ] || usage
+[ "$1" = "-h" ] || [ "$1" = "--help" ] && usage
+
+raw=$1
+printf '%s' "$raw" | grep -q '\.\.' && die "路径不能含 .."
+
+case "$raw" in
+/data)
+	die "不要把整个 /data 建成 venv"
+	;;
+/data/*)
+	dest=$raw
+	;;
+/*)
+	die "只能建在 /data 下"
+	;;
+*)
+	dest=/data/$raw
+	;;
+esac
+
+case "$dest" in
+/data|/data/)
+	die "不要把整个 /data 建成 venv"
+	;;
+esac
+
+[ -d /data ] || die "/data 未挂载"
+command -v python3 >/dev/null || die "镜像没有 python3"
+python3 -c 'import venv' 2>/dev/null || die "没有标准库 venv"
+python3 -c 'import pip' 2>/dev/null || die "没有系统 pip"
+
+if [ -e "$dest" ]; then
+	if [ -f "$dest/pyvenv.cfg" ]; then
+		die "已存在: $dest"
+	fi
+	die "路径已存在且不是 venv: $dest"
+fi
+
+mkdir -p "$(dirname "$dest")"
+python3 -m venv --system-site-packages --without-pip "$dest"
+
+echo "已创建 $dest"
+echo "  . $dest/bin/activate"
+echo "  python -m pip install 包名"

@@ -35,6 +35,7 @@ chmod 0755 \
 	"${TARGET_DIR}/usr/sbin/overlay" \
 	"${TARGET_DIR}/usr/sbin/wifi-setup" \
 	"${TARGET_DIR}/usr/sbin/walnutpi-config" \
+	"${TARGET_DIR}/usr/sbin/walnutpi-venv" \
 	"${TARGET_DIR}/usr/sbin/walnutpi-hex" \
 	"${TARGET_DIR}/usr/sbin/sprd-hciattach" \
 	"${TARGET_DIR}/etc/init.d/S00data" \

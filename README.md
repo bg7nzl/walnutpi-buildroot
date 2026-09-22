@@ -5,7 +5,7 @@
 分支：
 
 - `main`：单分区 ext4，可读写，适合折腾。
-- `hardened`：**不可变设备**。p1 FAT（只读 `/boot`）+ p2 squashfs 根 + p3 `/data`。系统分区刷完后不再写入，U-Boot 不存环境，任意掉电不会把 root/boot 写坏。唯一持久文件是 `/data/walnutpi.conf`（主机名、WiFi、SSH 公钥、root 密码哈希、40Pin overlay、本机生成的 Dropbear 密钥），坏了就回退默认并保留原文件。
+- `hardened`：**不可变设备**。p1 FAT（只读 `/boot`）+ p2 squashfs 根 + p3 `/data`。系统分区刷完后不再写入，U-Boot 不存环境，任意掉电不会把 root/boot 写坏。唯一持久配置是 `/data/walnutpi.conf`（主机名、WiFi、SSH 公钥、root 密码哈希、40Pin overlay、本机生成的 Dropbear 密钥），坏了就回退默认并保留原文件。带 CPython 3.12 / pip；项目用 `walnutpi-venv` 建在 `/data`。
 - `full`：`main` + Python 3。
 
 本仓库是 Buildroot 的 `BR2_EXTERNAL`。不包装、不依赖核桃派官方软件栈（`walnutpi-build`、`wpi-update`、`apt.walnutpi.com`、`set-device`）。
@@ -68,6 +68,7 @@ sudo dd if=walnutpi-1b.img of=/dev/sdX bs=4M conv=fsync status=progress
 | `board/walnutpi-1b/FLASH.md` | 刷卡、分区、`/data/walnutpi.conf`、板上用法 |
 | `board/walnutpi-1b/boot.cmd` | U-Boot 引导脚本：读 conf 里的 `overlay_*` 叠 dtbo，`booti` squashfs |
 | `board/walnutpi-1b/rootfs-overlay/usr/sbin/walnutpi-config` | conf 检验、原子写、开机落地 |
+| `board/walnutpi-1b/rootfs-overlay/usr/sbin/walnutpi-venv` | 在 `/data` 建 venv（无 ensurepip） |
 | `docker/` | 构建容器 |
 | `make-zip.sh` | 一键：在 `workspace/` 里出 zip |
 | `.github/workflows/image.yml` | `main` / `hardened` 推送时编 zip |

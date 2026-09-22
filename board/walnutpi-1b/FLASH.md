@@ -91,6 +91,14 @@ ed25519 主机密钥，十六进制）。改 overlay 后 **reboot**，由 U-Boot
 
 7. HDMI 控制台在显示器连上时走 DRM fbcon。LED PC13；按键 PC12。
 
+8. Python 3.12 在只读根上。现场装包必须用 `/data` 里的 venv（Buildroot 没有 ensurepip，不要直接 `python3 -m venv`）：
+
+       walnutpi-venv myapp          # → /data/myapp
+       . /data/myapp/bin/activate
+       python -m pip install 包名
+
+   纯 Python / 现成 aarch64 wheel 可以；要现场编译的包没有 gcc。整卡 `dd` 会冲掉 p3 上的环境。
+
 40Pin（与 wiki 图一致）
 ----------------------
 
